@@ -1,5 +1,4 @@
-from .models import RACE, MACE, RACEUnified
-
+from .models import MACE, RACE, RACEUnified
 
 MODEL_REGISTRY = {
     "race": RACE,
@@ -9,4 +8,3 @@ MODEL_REGISTRY = {
 }
 
 __all__ = ["RACE", "MACE", "RACEUnified", "MODEL_REGISTRY"]
-

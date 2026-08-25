@@ -16,10 +16,10 @@ explicitly — we never recompute baselines from the subset, otherwise the DFT
 residual labels stored in ``data.energy`` would land on a different reference
 frame from the teacher predictions and the soft-loss term would be biased.
 """
+
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Optional
 
 import torch
 from ase.io import read
@@ -38,7 +38,9 @@ class DistillData(Data):
         return super().__cat_dim__(key, value, *args, **kwargs)
 
 
-def _to_distill_data(g: Data, teacher_e: torch.Tensor, teacher_f: torch.Tensor) -> DistillData:
+def _to_distill_data(
+    g: Data, teacher_e: torch.Tensor, teacher_f: torch.Tensor
+) -> DistillData:
     out = DistillData()
     for k, v in g:
         out[k] = v
@@ -57,7 +59,7 @@ def get_distill_dataloader(
     enr_avg_per_element: dict,
     *,
     regress_forces: bool = True,
-    max_neigh: Optional[int] = None,
+    max_neigh: int | None = None,
     shuffle: bool = False,
 ):
     """Ragged-batch DataLoader; RACE handles variable-sized batches natively
@@ -88,8 +90,12 @@ def get_distill_dataloader(
         n_g = int(g.num_nodes)
         n_t = int(teacher["forces"][i].shape[0])
         if n_g != n_t:
-            raise ValueError(f"frame {i}: graph has {n_g} atoms but teacher_forces has {n_t}")
-        distill_graphs.append(_to_distill_data(g, teacher["energy"][i], teacher["forces"][i]))
+            raise ValueError(
+                f"frame {i}: graph has {n_g} atoms but teacher_forces has {n_t}"
+            )
+        distill_graphs.append(
+            _to_distill_data(g, teacher["energy"][i], teacher["forces"][i])
+        )
 
     loader = DataLoader(
         distill_graphs,

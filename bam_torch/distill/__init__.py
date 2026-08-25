@@ -7,12 +7,13 @@ hybrid energy/force loss:
 
 See ``examples/example-distillation/`` for a complete pipeline.
 """
-from .trainer import DistillTrainer
+
 from .dataset import (
     DistillData,
     get_distill_dataloader,
     teacher_baselines_from_ckpt,
 )
+from .trainer import DistillTrainer
 
 __all__ = [
     "DistillTrainer",

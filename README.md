@@ -34,59 +34,100 @@ BAM (Bayesian Atoms Modeling) is an implementation of **Bayesian E(3) Equivarian
 ### Prerequisites
 
 - Python 3.11+
-- CUDA 12.4+ (for GPU support)
-- PyTorch 2.5.1+
+- [uv](https://docs.astral.sh/uv/), installed outside the project (`curl -LsSf https://astral.sh/uv/install.sh | sh`, or Homebrew/pipx if you prefer)
+- CUDA 12.4+ if you want GPU training
 
-### Step 1: Create Conda Environment
+uv owns the environment, the resolution, and the command runner. You don't
+create a conda env, and you don't `pip install` into it by hand.
 
-```bash
-$ conda create --name bam_torch python=3.11
-$ conda activate bam_torch
-```
-
-Equivalent environments have also been tested with [virtualenv](https://virtualenv.pypa.io/) and [venv](https://docs.python.org/library/venv.html).
-
-### Step 2: Install BAM
+### Step 1: Get the source and build the core environment
 
 ```bash
 $ git clone https://github.com/myung-group/BAM-torch
 $ cd BAM-torch
-$ pip install -e .
+$ uv sync
 ```
+
+`uv sync` creates `.venv/` and installs exactly what `uv.lock` pins for the
+core dependencies plus the `dev` group (pytest, ruff, ty). Run everything
+through `uv run`, which keeps the environment in sync before each call:
+
+```bash
+$ uv run pytest -q
+$ uv run python -m bam_torch.economics.cli --help
+```
+
+Training scripts live under `examples/`, so run those from the example
+directory (see [Running Examples](#running-examples)).
+
+Verify the lock matches `pyproject.toml` at any time:
+
+```bash
+$ uv lock --check
+```
+
+### Step 2: Optional extras
+
+The extras stay out of the core sync on purpose, and there's no blanket
+`uv sync --all-extras` recommendation here: several of them are GPU- and
+build-specific, so pull in only what you need.
+
+For low-level acceleration of equivariant neural networks, use [cuEquivariance](https://github.com/NVIDIA/cuEquivariance):
+
+```bash
+$ uv sync --extra cueq
+```
+
+For an alternative equivariant-kernel backend, use [OpenEquivariance](https://github.com/PASSIONLab/OpenEquivariance):
+
+```bash
+$ uv sync --extra oeq
+```
+
+For Laplace approximations, use [laplace-torch](https://aleximmer.com/Laplace/):
+
+```bash
+$ uv sync --extra laplace
+```
+
+For the economics reporting CLI:
+
+```bash
+$ uv sync --extra economics
+$ uv run python -m bam_torch.economics.cli --help
+```
+
+### Step 3: Group averaging and the native PyG extensions
 
 The core training and inference path uses a pure-PyTorch scatter
-(`bam_torch/utils/scatter.py`) and does not need PyG's C++ extensions
+(`bam_torch/utils/scatter.py`), so it never needs PyG's C++ extensions
 (`torch_scatter`, `torch_cluster`, `torch_sparse`, `torch_spline_conv`,
-`pyg_lib`). Only the optional `group_averaging` module imports
-`torch_scatter` and `torch_cluster`; install those when you opt in
-(see Step 3).
+`pyg_lib`). A plain `uv sync` therefore does **not** install
+`torch_scatter` or `torch_cluster`. Only the optional `group_averaging`
+module imports them.
 
-### Step 3: Install optional components as needed
-
-For low-level acceleration of equivariant neural networks, use [cuEquivariance](https://github.com/NVIDIA/cuEquivariance).
-
-```bash
-$ pip install -e ".[cueq]"
-```
-
-For an alternative equivariant-kernel backend, use [OpenEquivariance](https://github.com/PASSIONLab/OpenEquivariance).
+Those two packages ship as sdists that compile against your installed Torch
+and CUDA build, so they come from the matching PyG wheel index rather than
+from the lock. `install_deps.py` inspects the Torch you actually have at
+runtime and picks the right index:
 
 ```bash
-$ pip install -e ".[oeq]"
+$ uv run python install_deps.py
+$ uv sync --extra group_averaging
 ```
 
-To enable Laplace approximations for neural networks, use [laplace-torch](https://aleximmer.com/Laplace/).
+The extra itself just records the two packages; the compiled artifacts have to
+already be in place from the step above, since a cold sync would otherwise try
+to build both sdists against your Torch.
 
-```bash
-$ pip install -e ".[laplace]"
-```
-
-To enable group averaging for graph neural networks, use [mendeleev](https://github.com/lmmentel/mendeleev). This extra also pulls in `torch_scatter` and `torch_cluster`, which need to come from the matching PyG wheel index — run `install_deps.py` once first to fetch the correct CUDA/PyTorch build:
-
-```bash
-$ python install_deps.py
-$ pip install -e ".[group_averaging]"
-```
+One caveat worth reading before you try this. The support table in
+`install_deps.py` (`TORCH_MAX_CUDA`) covers PyTorch 2.5 through 2.8, while
+`uv.lock` currently resolves core Torch 2.13.0. On an unsupported Torch the
+installer stops with "Unsupported version of PyTorch" instead of guessing a
+wheel. So group averaging isn't something this lock enables for you: you have
+to pin a Torch/CUDA combination that the table lists, and the resulting
+environment is your own responsibility, not a configuration this repository
+ships or tests.
 
 ## Quick Start
 
@@ -135,23 +176,23 @@ There are examples in `examples/example-*/`
 ### Single-GPU Training
 Run on a single node without using a job scheduler, by setting the environment variable:
 ```bash
-$ CUDA_VISIBLE_DEVICES=0 python main.py
+$ CUDA_VISIBLE_DEVICES=0 uv run python main.py
 ```
 
 Alternatively, set `"gpu-parallel": false` in `input.json`:
 ```bash
-$ python main.py
+$ uv run python main.py
 ```
 
 ### Multi-GPU Training (DistributedDataParallel)
 Run on a single node with multiple GPUs by setting the environment variables:
 ```bash
-$ CUDA_VISIBLE_DEVICES=0,1,2,3 python main.py
+$ CUDA_VISIBLE_DEVICES=0,1,2,3 uv run python main.py
 ```
 
 Alternatively, set `"gpu-parallel": true` in `input.json`:
 ```bash
-$ python main.py
+$ uv run python main.py
 ```
 This automatically detects all available GPUs and utilizes them for distributed computation.
 
@@ -195,6 +236,50 @@ bam-torch/
 ├── pyproject.toml       # Build configuration
 └── LICENSE              # License information
 ```
+
+## Development and Code Quality
+
+Every check runs through `uv run`, so they use the pinned dev tools from the
+lock (pytest 9.0.2, ruff 0.16.4, ty 0.0.74) rather than whatever is on your
+`PATH`:
+
+```bash
+$ uv lock --check
+$ uv run pytest -q
+$ uv run ruff format --check bam_torch install_deps.py
+$ uv run ruff check bam_torch install_deps.py
+$ uv run ty check bam_torch
+```
+
+### What Ruff covers
+
+Ruff's maintained-code scope is `bam_torch/` and `install_deps.py`, which is
+why both commands name those paths explicitly. `examples/` holds
+user-editable scientific scripts and generated run artifacts, and notebook
+checkpoints are machine-written copies, so both are excluded in this first
+wave. The lint selection is deliberately narrow (Pyflakes, import placement
+and ordering, pyupgrade); style families that would require semantic rewrites
+of the science code aren't enabled yet.
+
+To see the linter actually reject something, run it against the fixture that
+exists for exactly that purpose:
+
+```bash
+$ uv run ruff check tests/fixtures/ruff_invalid_import.py
+```
+
+That one fails on purpose with `F401 os imported but unused` and exit code 1.
+Everything else in this section exits 0 on a clean checkout.
+
+### What ty covers
+
+Read the ty command literally and you'd think the whole package is typed. It
+isn't. `[tool.ty.src]` in `pyproject.toml` sets `include = ["bam_torch/economics"]`,
+so `uv run ty check bam_torch` only analyzes `bam_torch/economics`, no matter
+what path you pass on the command line. This is an incremental baseline
+picked because economics is the smallest dependency-light surface, not a
+claim of full-package type coverage. Widening it means adding directories to
+that `include` list as legacy modules get annotated.
 
 ## Benchmarks & Results
 
@@ -326,7 +411,7 @@ cuEquivariance both require weighted tensor-product paths. To enable
 [OpenEquivariance](https://github.com/PASSIONLab/OpenEquivariance):
 
 ```bash
-$ pip install -e ".[oeq]"
+$ uv sync --extra oeq
 ```
 
 Then in `input.json`:
@@ -343,6 +428,7 @@ The trainer logs which interaction block is in use (`interaction block: -- fast`
 and which equivariant library was selected (`equiv. lib.: -- OpenEquivariance`)
 at startup. Note that backend selection follows `cueq → oeq → e3nn`, so set
 `cueq_config: false` to fall through to OEQ.
+
 
 ## Datasets
 

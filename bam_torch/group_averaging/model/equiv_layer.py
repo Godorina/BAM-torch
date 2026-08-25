@@ -1,28 +1,24 @@
-import torch
-import torch.nn.init as init
-from torch import nn, Tensor as T
-from torch.nn import functional as F
-from torch.jit import annotate
+from collections.abc import Callable
+from typing import Any
 
 import e3nn
-from e3nn import o3, nn
+import torch
+from e3nn import o3
 from e3nn.util.jit import compile_mode
+from torch import Tensor as T
+from torch.nn import functional as F
 
-from typing import Any, Callable, Dict, List, Optional, Type, Union, Tuple
-
+from bam_torch.group_averaging.model import ACTIVE_FN_REGISTRY
+from bam_torch.group_averaging.utils.ga_utils import batched_gram_schmidt_3d
 from bam_torch.model.blocks import (
-    LinearNodeEmbeddingBlock,
     ConcatenateRaceInteractionBlock,
+    LinearNodeEmbeddingBlock,
     RaceEquivariantBlock,
-    LinearReadoutBlock,
-    NonLinearReadoutBlock,
     RadialEmbeddingBlock,
 )
 from bam_torch.model.wrapper_ops import Linear
-from bam_torch.utils.scatter import scatter_sum, scatter_mean
-from bam_torch.utils.output_utils import get_outputs, get_symmetric_displacement
-from bam_torch.group_averaging.utils.ga_utils import batched_gram_schmidt_3d
-from bam_torch.group_averaging.model import ACTIVE_FN_REGISTRY
+from bam_torch.utils.scatter import scatter_sum
+
 
 def to_one_hot(indices: torch.Tensor, num_classes: int) -> torch.Tensor:
     """
@@ -32,45 +28,45 @@ def to_one_hot(indices: torch.Tensor, num_classes: int) -> torch.Tensor:
     :param device: torch device
     :return: (N x num_classes) tensor
     """
-    #shape = indices.shape[:-1] + (num_classes,)
-    shape: List[int] = list(indices.shape[:-1]) + [num_classes]
-    oh = torch.zeros(shape, device=indices.device) #.view(shape)
+    # shape = indices.shape[:-1] + (num_classes,)
+    shape: list[int] = list(indices.shape[:-1]) + [num_classes]
+    oh = torch.zeros(shape, device=indices.device)  # .view(shape)
 
     # scatter_ is the in-place version of scatter
-    #oh.scatter_(dim=-1, index=indices, value=1)
+    # oh.scatter_(dim=-1, index=indices, value=1)
     return oh.scatter_(-1, indices, 1.0)
 
 
 @compile_mode("script")
 class RACE(torch.nn.Module):
-    """Small equivariant (Race) model for probabilistic sampling of group representations
-    """
+    """Small equivariant (Race) model for probabilistic sampling of group representations"""
+
     def __init__(
-            self, 
-            cutoff: float = 6.0, 
-            avg_num_neighbors: int = 40, 
-            num_species: int = 1, 
-            max_ell: int = 3,
-            num_basis_func: int = 8,
-            hidden_irreps: e3nn.o3.Irreps = o3.Irreps("32x0e+32x1o+32x2e"),
-            nlayers: int = 3,
-            features_dim: int = 32,  # hidden_irreps.count(o3.Irrep(0, 1))
-            output_irreps: e3nn.o3.Irreps = o3.Irreps("3x1o"),
-            active_fn: str = "identity",
-            radial_MLP: Optional[List[int]] = [64, 64],
-            MLP_irreps: e3nn.o3.Irreps = o3.Irreps("16x0e"),
-            gate: Optional[Callable] = torch.nn.SiLU(),
-            cueq_config: Optional[Dict[str, Any]] = None,
+        self,
+        cutoff: float = 6.0,
+        avg_num_neighbors: int = 40,
+        num_species: int = 1,
+        max_ell: int = 3,
+        num_basis_func: int = 8,
+        hidden_irreps: e3nn.o3.Irreps = o3.Irreps("32x0e+32x1o+32x2e"),
+        nlayers: int = 3,
+        features_dim: int = 32,  # hidden_irreps.count(o3.Irrep(0, 1))
+        output_irreps: e3nn.o3.Irreps = o3.Irreps("3x1o"),
+        active_fn: str = "identity",
+        radial_MLP: list[int] | None = [64, 64],
+        MLP_irreps: e3nn.o3.Irreps = o3.Irreps("16x0e"),
+        gate: Callable | None = torch.nn.SiLU(),
+        cueq_config: dict[str, Any] | None = None,
     ):
         super().__init__()
-    
+
         if active_fn in ["swish", "silu", "SiLU"]:
             self.act_fn = torch.nn.SiLU()
         elif active_fn in ["relu", "ReLU"]:
             self.act_fn = torch.nn.ReLU()
         elif active_fn in ["identity", None]:
             self.act_fn = torch.nn.Identity()  # Need to modify later
-        
+
         self.cutoff = cutoff
         self.num_species = num_species
         self.output_irreps = o3.Irreps(output_irreps)
@@ -86,25 +82,25 @@ class RACE(torch.nn.Module):
             irreps_in=node_attr_irreps,
             irreps_out=node_feats_irreps,
             cueq_config=cueq_config,
-        ) # [n_nodes, irreps]
+        )  # [n_nodes, irreps]
 
         # Radial embedding
         self.radial_embedding = RadialEmbeddingBlock(
             r_max=1.0,
             num_bessel=num_basis_func,
-            num_polynomial_cutoff=2,   # default of BAM-jax
+            num_polynomial_cutoff=2,  # default of BAM-jax
             radial_type="bessel",
             distance_transform=None,
         )
         # Edge embedding
         edge_feats_irreps = o3.Irreps(f"{self.radial_embedding.out_dim}x0e")
-        sh_irreps = o3.Irreps.spherical_harmonics(max_ell) # interaction_irreps in JAX
+        sh_irreps = o3.Irreps.spherical_harmonics(max_ell)  # interaction_irreps in JAX
         num_features = hidden_irreps.count(o3.Irrep(0, 1))
         interaction_irreps = (sh_irreps * num_features).sort()[0].simplify()
-        self.spherical_harmonics = o3.SphericalHarmonics(sh_irreps, 
-                                                         normalize=True,
-                                                         normalization="component")
-        
+        self.spherical_harmonics = o3.SphericalHarmonics(
+            sh_irreps, normalize=True, normalization="component"
+        )
+
         ## 2) Interaction layer  # RealAgnosticInteractionBlock
         self.linear_x = Linear(
             x_node_feats_irreps,
@@ -112,7 +108,7 @@ class RACE(torch.nn.Module):
             internal_weights=True,
             shared_weights=True,
             cueq_config=cueq_config,
-        ) # x_node_feats
+        )  # x_node_feats
 
         self.interactions = torch.nn.ModuleList()
         self.products = torch.nn.ModuleList()
@@ -121,7 +117,7 @@ class RACE(torch.nn.Module):
         self.readouts_last = torch.nn.ModuleList()
         target_irreps = o3.Irreps(f"{hidden_irreps.count(o3.Irrep(0, 1))}x0e")
         for i in range(nlayers):
-            if i > 0: 
+            if i > 0:
                 node_feats_irreps = hidden_irreps
                 target_irreps = hidden_irreps
 
@@ -141,7 +137,7 @@ class RACE(torch.nn.Module):
             prod = RaceEquivariantBlock(
                 node_feats_irreps_1=x_node_feats_irreps,  # x_node_feats
                 node_feats_irreps_2=hidden_irreps,  # node_feats
-                output_irreps=hidden_irreps,      # hidden_irreps
+                output_irreps=hidden_irreps,  # hidden_irreps
                 use_sc=True,
                 cueq_config=cueq_config,
             )
@@ -153,8 +149,10 @@ class RACE(torch.nn.Module):
                 internal_weights=True,
                 shared_weights=True,
                 cueq_config=cueq_config,
-            ) 
-            self.readouts.append(readout) # [n_nodes, output_irreps.count(o3.Irrep(0, 1))]
+            )
+            self.readouts.append(
+                readout
+            )  # [n_nodes, output_irreps.count(o3.Irrep(0, 1))]
 
             readout_0e = Linear(
                 hidden_irreps,
@@ -174,14 +172,9 @@ class RACE(torch.nn.Module):
             )
             self.readouts_last.append(readout_last)
 
-        #self.emb = torch.nn.Embedding(num_embeddings=num_species, embedding_dim=num_species)
-    
-    def forward(
-            self, 
-            data, 
-            pos,
-            backprop=False
-    ):
+        # self.emb = torch.nn.Embedding(num_embeddings=num_species, embedding_dim=num_species)
+
+    def forward(self, data, pos, backprop=False):
         # assert Rij.ndim == 2 and Rij.shape[1] == 3
         # iatoms ==> senders     # edge_index[0]
         # jatoms ==> receivers   # edge_index[1]
@@ -202,7 +195,7 @@ class RACE(torch.nn.Module):
         else:
             species = data["species"]
             node_attrs = to_one_hot(species.unsqueeze(-1), self.num_species)
-        #node_feats = self.emb(species)
+        # node_feats = self.emb(species)
         node_feats = self.node_embedding(node_attrs)
 
         edge_index = data["edge_index"]
@@ -213,20 +206,23 @@ class RACE(torch.nn.Module):
         lengths = lengths[nonzero_idx]
         edge_index = edge_index[:, nonzero_idx]
         # R = R[nonzero_idx]
-        
+
         edge_attrs = self.spherical_harmonics(Rij)
-        edge_feats = self.radial_embedding(lengths.unsqueeze(1), 
-                                           node_attrs,
-                                           data["edge_index"],
-                                           species)
+        edge_feats = self.radial_embedding(
+            lengths.unsqueeze(1), node_attrs, data["edge_index"], species
+        )
         outputs_ks = []
         outputs_hs = []
-        node_logvar = [] 
-        node_f_logvar = [] 
+        node_logvar = []
+        node_f_logvar = []
         node_feats_list = []
         x_node_feats = self.linear_x(node_feats)
         for interaction, product, readout, readout_0e, readout_last in zip(
-            self.interactions, self.products, self.readouts, self.readouts_0e, self.readouts_last
+            self.interactions,
+            self.products,
+            self.readouts,
+            self.readouts_0e,
+            self.readouts_last,
         ):
             node_feats, sc = interaction(
                 node_attrs=node_attrs,
@@ -238,71 +234,77 @@ class RACE(torch.nn.Module):
             node_feats = product(
                 x_node_feats=x_node_feats,
                 node_feats=node_feats,
-                sc=sc, 
+                sc=sc,
             )
-            l_0_dim = sum([mul for mul, (l, p) in o3.Irreps("16x0e+3x1o") if str(l) == "0"])
-            l_1_dim = sum([mul for mul, (l, p) in o3.Irreps("16x0e+3x1o") if str(l) == "1"])
+            l_0_dim = sum(
+                [mul for mul, (l, p) in o3.Irreps("16x0e+3x1o") if str(l) == "0"]
+            )
+            l_1_dim = sum(
+                [mul for mul, (l, p) in o3.Irreps("16x0e+3x1o") if str(l) == "1"]
+            )
 
-            node_ks = readout(node_feats) # [n_nodes, len(heads)]  == [nbatch*num_nodes, "1x0e" or "2x0e"]
+            node_ks = readout(
+                node_feats
+            )  # [n_nodes, len(heads)]  == [nbatch*num_nodes, "1x0e" or "2x0e"]
             node_hs_0 = readout_0e(node_feats)
             node_hs = readout_last(node_ks[:, :l_0_dim])
-            #print(f"node_hs : {node_hs} | {node_hs.shape}")
-            #print(f"node_hs_0 : {node_hs_0} | {node_hs_0.shape}")
+            # print(f"node_hs : {node_hs} | {node_hs.shape}")
+            # print(f"node_hs_0 : {node_hs_0} | {node_hs_0.shape}")
             node_hs = torch.sum(torch.stack([node_hs, node_hs_0], dim=-1), dim=-1)
             node_feats_list.append(node_feats)
-            
+
             outputs_ks.append(node_ks[:, l_0_dim:])
             outputs_hs.append(node_hs)
 
         # Concatenate node features
-        #node_feats_out = torch.cat(node_feats_list, dim=-1)
+        # node_feats_out = torch.cat(node_feats_list, dim=-1)
 
         # Sum over contributions
-        outputs_ks = torch.stack(outputs_ks, dim=-1) # [nbatch*num_nodes, nlayers]
+        outputs_ks = torch.stack(outputs_ks, dim=-1)  # [nbatch*num_nodes, nlayers]
         outputs_ks = self.act_fn(outputs_ks)
 
-        outputs_hs = torch.stack(outputs_hs, dim=-1) # [nbatch*num_nodes, nlayers]
+        outputs_hs = torch.stack(outputs_hs, dim=-1)  # [nbatch*num_nodes, nlayers]
         outputs_hs = self.act_fn(outputs_hs)
 
         # Global pooling
-        outputs_ks = torch.sum(outputs_ks, dim=-1) # [nbatch*num_nodes]  # total_energy
+        outputs_ks = torch.sum(outputs_ks, dim=-1)  # [nbatch*num_nodes]  # total_energy
         pseudo_hs = torch.sum(outputs_hs, dim=-1).view(num_graphs, -1)
-        #print(f"node_energy = {node_energy}")
+        # print(f"node_energy = {node_energy}")
         pseudo_ks = scatter_sum(
-                src=outputs_ks,
-                index=data["batch"],
-                dim=0,
-                dim_size=num_graphs,
-            )
+            src=outputs_ks,
+            index=data["batch"],
+            dim=0,
+            dim_size=num_graphs,
+        )
         pseudo_ks = pseudo_ks.view(num_graphs, 3, 3)
 
         return pseudo_hs, pseudo_ks
-      
 
-def get_edge_relative_vectors_with_pbc(data: Dict[str, torch.Tensor], R):
+
+def get_edge_relative_vectors_with_pbc(data: dict[str, torch.Tensor], R):
     # iatoms ==> senders
     # jatoms ==> receivers
-    #R = data["positions"]
+    # R = data["positions"]
     cell = data["cell"]
     iatoms = data["edge_index"][0]  # shape = (b * n_edges)
-    jatoms = data["edge_index"][1]  # shape = (b * n_edges) 
-    Sij = data["edges"]   # shape = (b * n_edges, 3)
-    n_edges: List[int] = data["num_edges"].tolist()
-    
+    jatoms = data["edge_index"][1]  # shape = (b * n_edges)
+    Sij = data["edges"]  # shape = (b * n_edges, 3)
+    n_edges: list[int] = data["num_edges"].tolist()
+
     Sij = torch.split(Sij, n_edges, dim=0)
     shift_v = torch.cat(
-        [torch.einsum('ni,ij->nj', s, c)
-            for s, c in zip(Sij, cell)], dim=0
+        [torch.einsum("ni,ij->nj", s, c) for s, c in zip(Sij, cell)], dim=0
     )
-    _R = R[jatoms] - R[iatoms] 
+    _R = R[jatoms] - R[iatoms]
     Rij = _R + shift_v
 
-    return Rij # (num_edges, 3)
+    return Rij  # (num_edges, 3)
+
 
 class PermutaionMatrixPenalty(torch.nn.Module):
-    def __init__(self): #, n):
+    def __init__(self):  # , n):
         super().__init__()
-        #self.n = n
+        # self.n = n
 
     @staticmethod
     def _normalize(scores, axis, eps=1e-12):
@@ -331,7 +333,7 @@ class PermutaionMatrixPenalty(torch.nn.Module):
 
     def forward(self, perm_soft):
         b, k, n, _ = perm_soft.shape
-        #assert n == self.n
+        # assert n == self.n
         assert perm_soft.shape == (b, k, n, n)
         # compute entropy
         entropy_col, entropy_row = self.entropy(perm_soft)
@@ -343,20 +345,21 @@ class PermutaionMatrixPenalty(torch.nn.Module):
         loss = loss.mean()
         return loss
 
+
 class EquivariantInterface(torch.nn.Module):
     def __init__(
         self,
-        symmetry='SO3',
-        interface='prob',
+        symmetry="SO3",
+        interface="prob",
         fixed_noise=False,
         noise_scale=0.1,
         tau=0.01,
         hard=True,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
-        assert symmetry in ['SO3', 'O3']
-        assert interface in ['prob', 'unif']
+        assert symmetry in ["SO3", "O3"]
+        assert interface in ["prob", "unif"]
         self.symmetry = symmetry
         self.interface = interface
         self.fixed_noise = fixed_noise
@@ -364,20 +367,22 @@ class EquivariantInterface(torch.nn.Module):
         self.tau = tau
         self.hard = hard
         self.equiv_interface = RACE(
-            cutoff = kwargs.get('cutoff'), 
-            avg_num_neighbors = kwargs.get('avg_num_neighbors'), 
-            num_species = kwargs.get('num_species'), 
-            max_ell = kwargs.get('max_ell'),
-            num_basis_func = kwargs.get('num_basis_func'),
-            hidden_irreps = o3.Irreps(kwargs.get('hidden_irreps')),
-            nlayers= kwargs.get('nlayers'), # 3
-            features_dim = kwargs.get('features_dim'),  # hidden_irreps.count(o3.Irrep(0, 1))
-            output_irreps = o3.Irreps(kwargs.get('output_irreps')),
-            active_fn = kwargs.get('active_fn'),
-            radial_MLP = kwargs.get('radial_MLP'),
-            MLP_irreps = o3.Irreps(kwargs.get('MLP_irreps')),
-            gate = ACTIVE_FN_REGISTRY.get(kwargs.get('gate')),
-            cueq_config = kwargs.get('cueq_config'),
+            cutoff=kwargs.get("cutoff"),
+            avg_num_neighbors=kwargs.get("avg_num_neighbors"),
+            num_species=kwargs.get("num_species"),
+            max_ell=kwargs.get("max_ell"),
+            num_basis_func=kwargs.get("num_basis_func"),
+            hidden_irreps=o3.Irreps(kwargs.get("hidden_irreps")),
+            nlayers=kwargs.get("nlayers"),  # 3
+            features_dim=kwargs.get(
+                "features_dim"
+            ),  # hidden_irreps.count(o3.Irrep(0, 1))
+            output_irreps=o3.Irreps(kwargs.get("output_irreps")),
+            active_fn=kwargs.get("active_fn"),
+            radial_MLP=kwargs.get("radial_MLP"),
+            MLP_irreps=o3.Irreps(kwargs.get("MLP_irreps")),
+            gate=ACTIVE_FN_REGISTRY.get(kwargs.get("gate")),
+            cueq_config=kwargs.get("cueq_config"),
         )
         self.compute_entropy_loss = PermutaionMatrixPenalty()
 
@@ -400,18 +405,28 @@ class EquivariantInterface(torch.nn.Module):
         # softsort + log sinkhorn operator for computing soft permutation matrix
         log_perm_soft = (scores - scores_sorted).abs().neg() / self.tau
         for _ in range(sinkhorn_iter):
-            log_perm_soft = log_perm_soft - torch.logsumexp(log_perm_soft, dim=-1, keepdim=True)
-            log_perm_soft = log_perm_soft - torch.logsumexp(log_perm_soft, dim=-2, keepdim=True)
+            log_perm_soft = log_perm_soft - torch.logsumexp(
+                log_perm_soft, dim=-1, keepdim=True
+            )
+            log_perm_soft = log_perm_soft - torch.logsumexp(
+                log_perm_soft, dim=-2, keepdim=True
+            )
         perm_soft = log_perm_soft.exp()
         hs = perm_soft
         if self.hard:
             # argsort for hard permutation matrix
             with torch.no_grad():
-                perm_hard = torch.zeros_like(perm_soft).scatter(dim=-1, index=indices, value=1)
+                perm_hard = torch.zeros_like(perm_soft).scatter(
+                    dim=-1, index=indices, value=1
+                )
                 perm_hard = perm_hard.transpose(2, 3)
                 # (optional) test if perm_hard is a permutation matrix
-                assert torch.allclose(perm_hard.sum(-1), torch.ones_like(perm_hard.sum(-1)))
-                assert torch.allclose(perm_hard.sum(-2), torch.ones_like(perm_hard.sum(-2)))
+                assert torch.allclose(
+                    perm_hard.sum(-1), torch.ones_like(perm_hard.sum(-1))
+                )
+                assert torch.allclose(
+                    perm_hard.sum(-2), torch.ones_like(perm_hard.sum(-2))
+                )
             # differentiability with straight-through gradient
             # the estimated gradient is accurate if perm_soft is close to perm_hard
             # for this, entropy regularization is necessary
@@ -430,22 +445,22 @@ class EquivariantInterface(torch.nn.Module):
         assert pseudo_ks.shape == (b, k, 3, 3)
         # add small noise to prevent rank collapse
         pseudo_ks = pseudo_ks + eps * torch.randn_like(pseudo_ks, device=device)
-        pseudo_ks = pseudo_ks.view(b*k, 3, 3)
+        pseudo_ks = pseudo_ks.view(b * k, 3, 3)
         # use gram-schmidt to obtain orthogonal matrix
         ks = batched_gram_schmidt_3d(pseudo_ks)  # O(3)
-        assert ks.shape == (b*k, 3, 3)
+        assert ks.shape == (b * k, 3, 3)
 
-        if self.symmetry in ('SnxSO3', 'SO3'):
+        if self.symmetry in ("SnxSO3", "SO3"):
             # SO(3) equivariant map that maps O(3) matrix to SO(3) matrix
             # determinant are +- 1
             deter_ks = torch.linalg.det(ks)
-            assert deter_ks.shape == (b*k,)
+            assert deter_ks.shape == (b * k,)
             # multiply the first column
-            sign_arr = torch.ones(b*k, 3, device=device)
-            #sign_arr = sign_arr.clone()
+            sign_arr = torch.ones(b * k, 3, device=device)
+            # sign_arr = sign_arr.clone()
             sign_arr[:, 0] = deter_ks
-            #sign_arr = torch.cat([deter_ks.unsqueeze(1), sign_arr[:, 1:]], dim=1)
-            sign_arr = sign_arr[:, None, :].expand(b*k, 3, 3)
+            # sign_arr = torch.cat([deter_ks.unsqueeze(1), sign_arr[:, 1:]], dim=1)
+            sign_arr = sign_arr[:, None, :].expand(b * k, 3, 3)
             # elementwise multiplication
             ks = ks * sign_arr
 
@@ -470,7 +485,7 @@ class EquivariantInterface(torch.nn.Module):
 
     def _forward_prob(self, data, k: int):
         # k is the number of interface samples
-        #data["cell"].requires_grad_(True)
+        # data["cell"].requires_grad_(True)
         data["positions"].requires_grad_(True)
         x = data.positions
         x = x - x.mean(dim=0, keepdim=True)
@@ -479,7 +494,7 @@ class EquivariantInterface(torch.nn.Module):
         b_n, _ = x.shape
         n = int(b_n / b)
         idx = torch.tensor([i for i in range(b)], device=x.device)
-       
+
         pseudo_ks = []
         pseudo_hs = []
         for i in range(k):
@@ -487,13 +502,13 @@ class EquivariantInterface(torch.nn.Module):
             x = x + self.sample_invariant_noise(x, idx)
             p_hs, p_ks = self.equiv_interface(data, x)
             pseudo_ks.append(p_ks)
-            pseudo_hs.append(p_hs) # (b*n, 1) -> (b, ns)
-        
-        pseudo_ks = torch.cat(pseudo_ks, dim=0) 
-        pseudo_hs = torch.cat(pseudo_hs, dim=0) 
+            pseudo_hs.append(p_hs)  # (b*n, 1) -> (b, ns)
 
-        assert pseudo_ks.shape == (b*k, 3, 3)  # [b*k, c=3, 3]
-        assert pseudo_hs.shape == (b*k, n)  # [b*k, n]
+        pseudo_ks = torch.cat(pseudo_ks, dim=0)
+        pseudo_hs = torch.cat(pseudo_hs, dim=0)
+
+        assert pseudo_ks.shape == (b * k, 3, 3)  # [b*k, c=3, 3]
+        assert pseudo_hs.shape == (b * k, n)  # [b*k, n]
 
         pseudo_ks = pseudo_ks.transpose(1, 2)  # [b*k, 3, c=3]
         pseudo_ks = pseudo_ks.reshape(b, k, 3, 3)
@@ -505,8 +520,8 @@ class EquivariantInterface(torch.nn.Module):
         ks = self._postprocess_rotation(pseudo_ks)
         assert ks.shape == (b, k, 3, 3)
         gs = (hs, ks)
-        #print(f"hs: {hs}")
-        return gs ,entropy_loss
+        # print(f"hs: {hs}")
+        return gs, entropy_loss
 
     def _forward_unif(self, node_features, idx, k: int):
         b, n, _, _ = node_features.shape
@@ -515,25 +530,25 @@ class EquivariantInterface(torch.nn.Module):
         assert self.hard
         if self.fixed_noise:
             raise NotImplementedError
-        indices = torch.randn(b*k, n, device=device).argsort(dim=-1)
+        indices = torch.randn(b * k, n, device=device).argsort(dim=-1)
         # sample O(3) or SO(3) representation
-        if self.symmetry in ('O3'):
-            ks = torch.randn(b*k, 3, 3, device=device)
+        if self.symmetry in ("O3"):
+            ks = torch.randn(b * k, 3, 3, device=device)
             ks = batched_gram_schmidt_3d(ks)
             ks = ks.reshape(b, k, 3, 3)
-        elif self.symmetry in ('SO3'):
-            ks = torch.randn(b*k, 3, 3, device=device)
+        elif self.symmetry in ("SO3"):
+            ks = torch.randn(b * k, 3, 3, device=device)
             ks = batched_gram_schmidt_3d(ks)
             # SO(3) equivariant map that maps O(3) matrix to SO(3) matrix
             # determinant are +- 1
             deter_ks = torch.linalg.det(ks)
-            assert deter_ks.shape == (b*k,)
+            assert deter_ks.shape == (b * k,)
             # multiply the first column
-            sign_arr = torch.ones(b*k, 3, device=device)
-            #sign_arr = sign_arr.clone()
+            sign_arr = torch.ones(b * k, 3, device=device)
+            # sign_arr = sign_arr.clone()
             sign_arr[:, 0] = deter_ks
-            #sign_arr = torch.cat([deter_ks.unsqueeze(1), sign_arr[:, 1:]], dim=1)
-            sign_arr = sign_arr[:, None, :].expand(b*k, 3, 3)
+            # sign_arr = torch.cat([deter_ks.unsqueeze(1), sign_arr[:, 1:]], dim=1)
+            sign_arr = sign_arr[:, None, :].expand(b * k, 3, 3)
             ks = ks * sign_arr
             ks = ks.reshape(b, k, 3, 3)
         else:
@@ -541,15 +556,11 @@ class EquivariantInterface(torch.nn.Module):
         ks
         return ks
 
-    
     def forward(self, data, k):
         # k is the number of interface samples
 
-
         gs = self._forward_prob(data, k)
-        #if self.symmetry in ('O3', 'SO3'):
+        # if self.symmetry in ('O3', 'SO3'):
         #    # entropy loss is only for permutation involved groups
         #    entropy_loss = torch.tensor(0, device=node_features.device)
         return gs
-
-

@@ -10,25 +10,28 @@ Or in Python:
 """
 
 import os
+
 os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 os.environ["MASTER_ADDR"] = "localhost"
 os.environ["MASTER_PORT"] = "29500"
 os.environ["RANK"] = "0"
 os.environ["WORLD_SIZE"] = "1"
 
-import ast
 import argparse
+import ast
+
 import torch
 import torch.distributed as dist
 from e3nn.util import jit
 
+from bam_torch.lammps.lammps_bam import LAMMPS_BAM
 from bam_torch.model import models as bam_models
 from bam_torch.model.models import get_edge_relative_vectors_with_pbc_lammps
-from bam_torch.lammps.lammps_bam import LAMMPS_BAM
 
 
-def create_lammps_model(pkl_path='model.pkl', pt_path='model.pt', output_path=None,
-                        enr_avg_file=None):
+def create_lammps_model(
+    pkl_path="model.pkl", pt_path="model.pt", output_path=None, enr_avg_file=None
+):
     """Convert model.pt to LAMMPS-compatible TorchScript format.
 
     Args:
@@ -41,35 +44,35 @@ def create_lammps_model(pkl_path='model.pkl', pt_path='model.pt', output_path=No
         Path to the saved LAMMPS model
     """
     if output_path is None:
-        output_path = pt_path.replace('.pt', '-lammps.pt')
+        output_path = pt_path.replace(".pt", "-lammps.pt")
 
     # Initiate distributed process
     if not dist.is_initialized():
         dist.init_process_group(
-            backend='nccl' if torch.cuda.is_available() else 'gloo',
-            init_method='env://',
+            backend="nccl" if torch.cuda.is_available() else "gloo",
+            init_method="env://",
             world_size=1,
-            rank=0
+            rank=0,
         )
 
     # Load pkl for configuration
-    pckl = torch.load(pkl_path, map_location='cpu', weights_only=False)
-    nlayers = pckl['input.json']['nlayers']
-    cutoff = pckl['input.json']['cutoff']
+    pckl = torch.load(pkl_path, map_location="cpu", weights_only=False)
+    nlayers = pckl["input.json"]["nlayers"]
+    cutoff = pckl["input.json"]["cutoff"]
 
     # Get energy averages
     if enr_avg_file is not None:
-        with open(enr_avg_file, 'r', encoding='utf-8') as file:
+        with open(enr_avg_file, encoding="utf-8") as file:
             content = file.read()
         enr_avg_per_element, uniq_element = ast.literal_eval(content)
     else:
-        uniq_element = pckl['uniq_element']
-        enr_avg_per_element = pckl['enr_avg_per_element']
+        uniq_element = pckl["uniq_element"]
+        enr_avg_per_element = pckl["enr_avg_per_element"]
 
     # Get energy correction
     # Newer checkpoints save valid_scale_shift as {class_idx: tensor} dict;
     # older checkpoints saved it as a tensor/list. Handle both.
-    vss = pckl['valid_scale_shift']
+    vss = pckl["valid_scale_shift"]
     if isinstance(vss, dict):
         e_corr = torch.stack([v for v in vss.values()]).flatten().mean().item()
     else:
@@ -82,10 +85,10 @@ def create_lammps_model(pkl_path='model.pkl', pt_path='model.pt', output_path=No
     print(f"Using device: {device}")
 
     # Load model
-    model = torch.load(pt_path, map_location='cpu', weights_only=False)
+    model = torch.load(pt_path, map_location="cpu", weights_only=False)
 
     # Remove DDP wrapper
-    if hasattr(model, 'module'):
+    if hasattr(model, "module"):
         model = model.module
 
     model.eval()
@@ -94,7 +97,9 @@ def create_lammps_model(pkl_path='model.pkl', pt_path='model.pt', output_path=No
     model.num_interactions = torch.tensor(nlayers)
     model.r_max = torch.tensor(cutoff)
     model = model.float().to(device)
-    bam_models.get_edge_relative_vectors_with_pbc = get_edge_relative_vectors_with_pbc_lammps
+    bam_models.get_edge_relative_vectors_with_pbc = (
+        get_edge_relative_vectors_with_pbc_lammps
+    )
     model.training_mode_for_lammps = True
 
     # Adjust variables for compatibility across model versions
@@ -115,9 +120,7 @@ def create_lammps_model(pkl_path='model.pkl', pt_path='model.pt', output_path=No
 
     # Generate LAMMPS-BAM model
     lammps_model = LAMMPS_BAM(
-        model,
-        enr_avg_per_element=enr_avg_per_element,
-        e_corr=e_corr
+        model, enr_avg_per_element=enr_avg_per_element, e_corr=e_corr
     )
     lammps_model = lammps_model.to(device)
     lammps_model_compiled = jit.compile(lammps_model)
@@ -133,16 +136,32 @@ def create_lammps_model(pkl_path='model.pkl', pt_path='model.pt', output_path=No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Convert model.pt to LAMMPS-compatible TorchScript format'
+        description="Convert model.pt to LAMMPS-compatible TorchScript format"
     )
-    parser.add_argument('--pkl', type=str, default='model.pkl',
-                        help='Path to the model pkl file (default: model.pkl)')
-    parser.add_argument('--pt', type=str, default='model.pt',
-                        help='Path to the model pt file (default: model.pt)')
-    parser.add_argument('--output', type=str, default=None,
-                        help='Path to save the LAMMPS model (default: {pt}-lammps.pt)')
-    parser.add_argument('--enr-avg-file', type=str, default=None,
-                        help='Optional file containing enr_avg_per_element for universal potential')
+    parser.add_argument(
+        "--pkl",
+        type=str,
+        default="model.pkl",
+        help="Path to the model pkl file (default: model.pkl)",
+    )
+    parser.add_argument(
+        "--pt",
+        type=str,
+        default="model.pt",
+        help="Path to the model pt file (default: model.pt)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Path to save the LAMMPS model (default: {pt}-lammps.pt)",
+    )
+    parser.add_argument(
+        "--enr-avg-file",
+        type=str,
+        default=None,
+        help="Optional file containing enr_avg_per_element for universal potential",
+    )
     args = parser.parse_args()
 
     create_lammps_model(args.pkl, args.pt, args.output, args.enr_avg_file)

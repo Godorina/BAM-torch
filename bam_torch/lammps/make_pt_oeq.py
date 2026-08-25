@@ -30,16 +30,17 @@ Or in Python:
 
 import argparse
 import inspect
+from copy import deepcopy
+
 import torch
 from e3nn import o3
-from copy import deepcopy
 
 from bam_torch.model.models import RACE
 from bam_torch.model.wrapper_ops import (
-    CuEquivarianceConfig,
-    OEQConfig,
     CUET_AVAILABLE,
     OEQ_AVAILABLE,
+    CuEquivarianceConfig,
+    OEQConfig,
 )
 
 
@@ -54,9 +55,9 @@ def _trained_with_e3nn(state_dict):
     cannot be used to identify the training backend.
     """
     for k in state_dict.keys():
-        if not k.startswith('interactions.'):
+        if not k.startswith("interactions."):
             continue
-        if '.conv_tp.weight' in k or '._compiled_main_left_right._w3j_' in k:
+        if ".conv_tp.weight" in k or "._compiled_main_left_right._w3j_" in k:
             return True
     return False
 
@@ -66,45 +67,57 @@ def _resolve_backend(state_dict, cfg, requested):
 
     requested: 'auto' | 'e3nn' | 'oeq' | 'cueq'
     """
-    if requested == 'e3nn':
-        return 'e3nn', None, None
-    if requested == 'oeq':
+    if requested == "e3nn":
+        return "e3nn", None, None
+    if requested == "oeq":
         if not OEQ_AVAILABLE:
             raise RuntimeError(
                 "Backend 'oeq' was requested but openequivariance is not installed."
             )
-        return 'oeq', None, OEQConfig(enabled=True, optimize_all=True)
-    if requested == 'cueq':
+        return "oeq", None, OEQConfig(enabled=True, optimize_all=True)
+    if requested == "cueq":
         if not CUET_AVAILABLE:
             raise RuntimeError(
                 "Backend 'cueq' was requested but CuEquivariance is not installed."
             )
-        return 'cueq', CuEquivarianceConfig(
-            enabled=True, layout="ir_mul",
-            group="O3_e3nn", optimize_all=True,
-        ), None
+        return (
+            "cueq",
+            CuEquivarianceConfig(
+                enabled=True,
+                layout="ir_mul",
+                group="O3_e3nn",
+                optimize_all=True,
+            ),
+            None,
+        )
 
     # requested == 'auto' — auto-detect from checkpoint then env availability
     if _trained_with_e3nn(state_dict):
-        return 'e3nn (auto: forced by checkpoint)', None, None
+        return "e3nn (auto: forced by checkpoint)", None, None
 
-    cueq_request = cfg.get('cueq_config')
-    oeq_request = cfg.get('oeq_config')
+    cueq_request = cfg.get("cueq_config")
+    oeq_request = cfg.get("oeq_config")
 
     if (cueq_request is None or cueq_request) and CUET_AVAILABLE:
-        return 'cueq (auto)', CuEquivarianceConfig(
-            enabled=True, layout="ir_mul",
-            group="O3_e3nn", optimize_all=True,
-        ), None
+        return (
+            "cueq (auto)",
+            CuEquivarianceConfig(
+                enabled=True,
+                layout="ir_mul",
+                group="O3_e3nn",
+                optimize_all=True,
+            ),
+            None,
+        )
     if oeq_request and OEQ_AVAILABLE:
-        return 'oeq (auto)', None, OEQConfig(enabled=True, optimize_all=True)
-    return 'e3nn (auto: fallback)', None, None
+        return "oeq (auto)", None, OEQConfig(enabled=True, optimize_all=True)
+    return "e3nn (auto: fallback)", None, None
 
 
 def recreate_model_pt_from_pkl(
-    pkl_path='model.pkl',
-    output_path='model.pt',
-    backend='auto',
+    pkl_path="model.pkl",
+    output_path="model.pt",
+    backend="auto",
 ):
     """Generate model.pt from model.pkl
 
@@ -120,48 +133,46 @@ def recreate_model_pt_from_pkl(
         model: The loaded RACE model
     """
     # Load checkpoint
-    pckl = torch.load(pkl_path, map_location='cpu', weights_only=False)
-    cfg = pckl['input.json']
+    pckl = torch.load(pkl_path, map_location="cpu", weights_only=False)
+    cfg = pckl["input.json"]
 
     # Strip DDP prefix once so backend detection sees the real keys.
-    state_dict = pckl['params']
-    if any(k.startswith('module.') for k in state_dict.keys()):
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    state_dict = pckl["params"]
+    if any(k.startswith("module.") for k in state_dict.keys()):
+        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
 
-    backend_used, cueq_config, oeq_config = _resolve_backend(
-        state_dict, cfg, backend
-    )
+    backend_used, cueq_config, oeq_config = _resolve_backend(state_dict, cfg, backend)
 
     # Parameter to choose force computation mode:
-    regress_forces = cfg.get('regress_forces', 'auto')
-    if regress_forces == True:    # forces computed via auto-gradient of energy
+    regress_forces = cfg.get("regress_forces", "auto")
+    if regress_forces == True:  # forces computed via auto-gradient of energy
         regress_forces = "autograd"
     elif regress_forces == False:  # no force computation
         regress_forces = "false"
 
     model_kwargs = dict(
-        cutoff=cfg['cutoff'],
-        avg_num_neighbors=cfg['avg_num_neighbors'],
-        num_species=cfg['num_species'],
-        max_ell=cfg['max_ell'],
-        num_basis_func=cfg['num_radial_basis'],
-        hidden_irreps=o3.Irreps(cfg['hidden_channels']),
-        nlayers=cfg['nlayers'],
-        features_dim=cfg['features_dim'],
-        output_irreps=o3.Irreps(cfg.get('output_channels', '1x0e')),
-        active_fn=cfg.get('active_fn', 'identity'),
+        cutoff=cfg["cutoff"],
+        avg_num_neighbors=cfg["avg_num_neighbors"],
+        num_species=cfg["num_species"],
+        max_ell=cfg["max_ell"],
+        num_basis_func=cfg["num_radial_basis"],
+        hidden_irreps=o3.Irreps(cfg["hidden_channels"]),
+        nlayers=cfg["nlayers"],
+        features_dim=cfg["features_dim"],
+        output_irreps=o3.Irreps(cfg.get("output_channels", "1x0e")),
+        active_fn=cfg.get("active_fn", "identity"),
         regress_forces=regress_forces,
         cueq_config=cueq_config,
     )
     model_params = inspect.signature(RACE).parameters
-    if 'oeq_config' in model_params:
-        model_kwargs['oeq_config'] = oeq_config
-    if 'l_separated_layer_norm' in model_params:
-        model_kwargs['l_separated_layer_norm'] = cfg.get(
-            'l_separated_layer_norm', False
+    if "oeq_config" in model_params:
+        model_kwargs["oeq_config"] = oeq_config
+    if "l_separated_layer_norm" in model_params:
+        model_kwargs["l_separated_layer_norm"] = cfg.get(
+            "l_separated_layer_norm", False
         )
-    if 'interaction_block' in model_params:
-        model_kwargs['interaction_block'] = cfg.get('interaction_block', 'slow')
+    if "interaction_block" in model_params:
+        model_kwargs["interaction_block"] = cfg.get("interaction_block", "slow")
 
     model = RACE(**model_kwargs)
 
@@ -181,31 +192,45 @@ def recreate_model_pt_from_pkl(
     torch.save(deepcopy(model), output_path)
 
     print(f"Successfully recreated {output_path} from {pkl_path}")
-    print(f"  Model type:        RACE")
+    print("  Model type:        RACE")
     print(f"  Backend:           {backend_used}")
     print(f"  Cutoff:            {cfg['cutoff']} A")
     print(f"  Total params:      {sum(p.numel() for p in model.parameters()):,}")
-    print(f"  Auto-init buffers: {auto_init_count} "
-          f"(internal e3nn caches / Wigner 3j; not learned weights)")
+    print(
+        f"  Auto-init buffers: {auto_init_count} "
+        f"(internal e3nn caches / Wigner 3j; not learned weights)"
+    )
 
     return model
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Convert model pkl to pt format')
-    parser.add_argument('--pkl', type=str, default='model.pkl',
-                        help='Path to the model pkl file (default: model.pkl)')
-    parser.add_argument('--pt', type=str, default='model.pt',
-                        help='Path to save the pt file (default: model.pt)')
-    parser.add_argument('--backend', type=str, default='auto',
-                        choices=['auto', 'e3nn', 'oeq', 'cueq'],
-                        help=(
-                            "Equivariant backend to rebuild with: "
-                            "'auto' (detect from checkpoint), "
-                            "'e3nn' (force — required when target is LAMMPS), "
-                            "'oeq' (force OpenEquivariance), "
-                            "'cueq' (force CuEquivariance). Default: auto."
-                        ))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Convert model pkl to pt format")
+    parser.add_argument(
+        "--pkl",
+        type=str,
+        default="model.pkl",
+        help="Path to the model pkl file (default: model.pkl)",
+    )
+    parser.add_argument(
+        "--pt",
+        type=str,
+        default="model.pt",
+        help="Path to save the pt file (default: model.pt)",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="auto",
+        choices=["auto", "e3nn", "oeq", "cueq"],
+        help=(
+            "Equivariant backend to rebuild with: "
+            "'auto' (detect from checkpoint), "
+            "'e3nn' (force — required when target is LAMMPS), "
+            "'oeq' (force OpenEquivariance), "
+            "'cueq' (force CuEquivariance). Default: auto."
+        ),
+    )
     args = parser.parse_args()
 
     recreate_model_pt_from_pkl(args.pkl, args.pt, backend=args.backend)

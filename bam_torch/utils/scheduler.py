@@ -1,6 +1,7 @@
 import inspect
-import torch.optim.lr_scheduler as lr_scheduler
+
 import pytorch_warmup as warmup
+import torch.optim.lr_scheduler as lr_scheduler
 
 
 class LRScheduler:
@@ -28,10 +29,10 @@ class LRScheduler:
         else:
             self.scheduler_type = "LambdaLR"
 
-            #def scheduler_lambda_fn(x):
+            # def scheduler_lambda_fn(x):
             #    return warmup_lr_lambda(x, self.optim_config)
 
-            #self.optim_config["lr_lambda"] = scheduler_lambda_fn
+            # self.optim_config["lr_lambda"] = scheduler_lambda_fn
             self.optim_config["lr_lambda"] = self.optim_config["decay_factor"]
 
         if self.scheduler_type == "Null":
@@ -67,7 +68,8 @@ class LRScheduler:
                     print(f"Using fidelity_max_steps for scheduler -> {T_max}")
             if self.optim_config["warmup_steps"] > 0:
                 self.warmup_scheduler = warmup.ExponentialWarmup(
-                    self.optimizer, warmup_period=self.optim_config["warmup_steps"],
+                    self.optimizer,
+                    warmup_period=self.optim_config["warmup_steps"],
                 )
             self.scheduler = lr_scheduler.CosineAnnealingLR(
                 self.optimizer, T_max=T_max, eta_min=1e-7
@@ -77,7 +79,7 @@ class LRScheduler:
             self.scheduler = getattr(lr_scheduler, self.scheduler_type)
             scheduler_args = self.filter_kwargs(self.optim_config)
             self.scheduler = self.scheduler(optimizer, **scheduler_args)
-        
+
     def step(self, metrics=None, epoch=None):
         if self.scheduler_type == "Null":
             return
@@ -112,8 +114,6 @@ class LRScheduler:
 
     def state_dict(self):
         return self.scheduler.state_dict()
-    
+
     def load_state_dict(self, model_ckpt):
         return self.scheduler.load_state_dict(model_ckpt)
-
-        

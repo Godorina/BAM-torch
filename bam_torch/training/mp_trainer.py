@@ -1,24 +1,23 @@
-import os
+import ast
+import atexit
 import gc
-import re
+import os
 import pickle
+import re
+from copy import deepcopy
 from pathlib import Path
 from time import time
-from copy import deepcopy
 
 import torch
+from torch.utils.data import DataLoader as TorchLoader
+from torch.utils.data import Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader
 
 from bam_torch.training.base_trainer import BaseTrainer
+from bam_torch.training.loss import HuberLoss, RMSELoss, l2_regularization
 from bam_torch.utils.sampler import DistributedBalancedAtomCountBatchSampler
-from bam_torch.training.loss import RMSELoss, l2_regularization, HuberLoss
-
-import ast
-import atexit
-from tqdm import tqdm
-from bam_torch.utils.utils import date, data_to_dict
-from torch.utils.data import Dataset, DataLoader as TorchLoader
-from torch.utils.data.distributed import DistributedSampler
+from bam_torch.utils.utils import data_to_dict, date
 
 
 def move_to_device(data, device):
@@ -35,17 +34,17 @@ class MPTrainer(BaseTrainer):
         super().__init__(json_data, rank, world_size)
 
     def configure_dataloader(self):
-        #with open(self.json_data['enr_avg_per_element'], 'r', encoding='utf-8') as file:
+        # with open(self.json_data['enr_avg_per_element'], 'r', encoding='utf-8') as file:
         #    content = file.read()
-        #enr_avg_per_element, uniq_element = ast.literal_eval(content)
+        # enr_avg_per_element, uniq_element = ast.literal_eval(content)
 
-        #return None, None, enr_avg_per_element, uniq_element
+        # return None, None, enr_avg_per_element, uniq_element
         return None, None, None, None
 
     def load_pickle_files_with_progress(self, filename, folder_path):
         combined_list = []
-        #files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
-        #for filename in tqdm(files, desc=f"Loading files from {folder_path}"):
+        # files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+        # for filename in tqdm(files, desc=f"Loading files from {folder_path}"):
         file_path = os.path.join(folder_path, filename)
         with open(file_path, "rb") as f:
             data = pickle.load(f)
@@ -55,24 +54,24 @@ class MPTrainer(BaseTrainer):
                 combined_list.append(data)
         return combined_list
 
-    def train_one_epoch(self, mode='train', data_loader=None):
+    def train_one_epoch(self, mode="train", data_loader=None):
         train_files, valid_files = self.get_pkl_data_path()
-        if mode == 'train':
+        if mode == "train":
             self.model.train()
             backprop = True
-            loss_log_config = self.log_config['train']
-            self.ckpt['train_scale_shift'] = {
-                    k: [] for k in self.enr_avg_per_element.keys()
+            loss_log_config = self.log_config["train"]
+            self.ckpt["train_scale_shift"] = {
+                k: [] for k in self.enr_avg_per_element.keys()
             }
             data_files = train_files
         else:  # test or valid
             self.model.eval()
             backprop = False
-            loss_log_config = self.log_config['valid']
-            self.ckpt['valid_scale_shift'] = {
-                    k: [] for k in self.enr_avg_per_element.keys()
-                }
-            self.ckpt['valid_scale_shift_origin'] = []
+            loss_log_config = self.log_config["valid"]
+            self.ckpt["valid_scale_shift"] = {
+                k: [] for k in self.enr_avg_per_element.keys()
+            }
+            self.ckpt["valid_scale_shift_origin"] = []
             data_files = valid_files
 
         epoch_loss_dict = {key: [] for key in loss_log_config}
@@ -86,12 +85,14 @@ class MPTrainer(BaseTrainer):
                 preds = self.scale_shift(preds, data, mode)
 
                 loss_dict = self.compute_loss(preds, data)
-                loss = loss_dict['loss']
+                loss = loss_dict["loss"]
                 if backprop:
                     self.optimizer.zero_grad()
                     loss.backward()
-                    #torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
-                    torch.nn.utils.clip_grad_value_(self.model.parameters(), clip_value=0.5)
+                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                    torch.nn.utils.clip_grad_value_(
+                        self.model.parameters(), clip_value=0.5
+                    )
                     self.optimizer.step()
 
                     if self.ema is not None:
@@ -99,7 +100,9 @@ class MPTrainer(BaseTrainer):
 
                 for l in loss_log_config:
                     val = loss_dict.get(l, torch.nan)
-                    epoch_loss_dict[l].append(val.detach().cpu() if isinstance(val, torch.Tensor) else val)
+                    epoch_loss_dict[l].append(
+                        val.detach().cpu() if isinstance(val, torch.Tensor) else val
+                    )
 
                 data.clear()
                 del data, preds, loss_dict
@@ -111,14 +114,16 @@ class MPTrainer(BaseTrainer):
             gc.collect()
             del data_loader
 
-        epoch_loss_dict = {key: torch.mean(torch.tensor(value)) \
-                           for key, value in epoch_loss_dict.items()}
+        epoch_loss_dict = {
+            key: torch.mean(torch.tensor(value))
+            for key, value in epoch_loss_dict.items()
+        }
         return epoch_loss_dict
 
     def get_pkl_data_path(self):
-        dir_path = self.json_data.get('fname_traj')
-        ntrain = self.json_data.get('ntrain')
-        nvalid = self.json_data.get('nvalid')
+        dir_path = self.json_data.get("fname_traj")
+        ntrain = self.json_data.get("ntrain")
+        nvalid = self.json_data.get("nvalid")
         if type(ntrain) == str:
             train_dir_path = ntrain
             if os.path.isdir(train_dir_path):
@@ -161,7 +166,9 @@ class MPTrainer(BaseTrainer):
 
         sampled_dataset_save_folder = Path(f"./{mode}_datasets-{self.rank}")
         sampled_dataset_file_name = f"{mode}-{file_number}.pkl"
-        sampled_dataset_file_path = sampled_dataset_save_folder / sampled_dataset_file_name
+        sampled_dataset_file_path = (
+            sampled_dataset_save_folder / sampled_dataset_file_name
+        )
 
         if sampled_dataset_file_path.exists():
             t1 = time()
@@ -180,9 +187,9 @@ class MPTrainer(BaseTrainer):
             if not isinstance(data, list):
                 data = [data]
 
-            ntrain = self.json_data.get('ntrain')
-            nvalid = self.json_data.get('nvalid')
-            ntest = self.json_data.get('ntest')
+            ntrain = self.json_data.get("ntrain")
+            nvalid = self.json_data.get("nvalid")
+            ntest = self.json_data.get("ntest")
 
             if type(ntrain) == float or ntrain < 1.0:
                 ntrain = round(ntrain * len(data))
@@ -192,7 +199,7 @@ class MPTrainer(BaseTrainer):
                 if type(ntest) == float:
                     ntest = round(ntest * len(data))
                     if ntrain + nvalid + ntest > len(data):
-                        ntest = ntest - (ntrain + nvalid + ntest  - len(data))
+                        ntest = ntest - (ntrain + nvalid + ntest - len(data))
 
             if type(ntrain) != str:
                 if ntest == None:
@@ -204,20 +211,25 @@ class MPTrainer(BaseTrainer):
                 idx = torch.arange(ntrain + nvalid + ntest)
                 idx = idx[torch.randperm(ntrain + nvalid + ntest)]
                 idx_train = idx[:ntrain]
-                idx_valid = idx[ntrain:ntrain+nvalid]
+                idx_valid = idx[ntrain : ntrain + nvalid]
                 idx_test = idx[-ntest:]
-                if mode == 'train':
+                if mode == "train":
                     test_data = [data[i] for i in idx_test]
                     data = [data[i] for i in idx_train]
-                    sampled_test_dataset_save_folder = Path(f"./test_datasets-{self.rank}")
+                    sampled_test_dataset_save_folder = Path(
+                        f"./test_datasets-{self.rank}"
+                    )
                     sampled_test_dataset_file_name = f"test-{file_number}.pkl"
-                    sampled_test_dataset_file_path = sampled_test_dataset_save_folder / sampled_test_dataset_file_name
+                    sampled_test_dataset_file_path = (
+                        sampled_test_dataset_save_folder
+                        / sampled_test_dataset_file_name
+                    )
                     with open(sampled_test_dataset_file_path, "wb") as f:
                         pickle.dump(test_data, f)
                 else:
                     data = [data[i] for i in idx_valid]
 
-            if mode != 'test':
+            if mode != "test":
                 with open(sampled_dataset_file_path, "wb") as f:
                     pickle.dump(data, f)
 
@@ -227,75 +239,79 @@ class MPTrainer(BaseTrainer):
     def get_dataloader_from_data(self, graphset):
         data_sampler = DistributedBalancedAtomCountBatchSampler(
             dataset=graphset,
-            batch_size=self.json_data['nbatch'],
+            batch_size=self.json_data["nbatch"],
             num_replicas=self.world_size,
             rank=self.rank,
             shuffle=False,
-            seed=self.json_data['NN']['data_seed'],
+            seed=self.json_data["NN"]["data_seed"],
             drop_last=False,
-            reference='edges'
+            reference="edges",
         )
         data_loader = DataLoader(
             graphset,
-            self.json_data['nbatch'],
+            self.json_data["nbatch"],
             shuffle=False,
             drop_last=False,
             pin_memory=True,
             num_workers=0,
             collate_fn=None,
-            sampler=data_sampler
+            sampler=data_sampler,
         )
         return data_loader
 
-    def configure_loss(self, reduction='mean'):
+    def configure_loss(self, reduction="mean"):
         nn_config = self.json_data.get("NN")
         loss_config = nn_config.get("loss_config")
         if loss_config == None:
             if self.json_data["regress_forces"]:
-                loss_config = {'energy_loss': 'huber',
-                               'force_loss': 'huber',
-                               'stress_loss' : 'huber'}
+                loss_config = {
+                    "energy_loss": "huber",
+                    "force_loss": "huber",
+                    "stress_loss": "huber",
+                }
             else:
-                loss_config = {'energy_loss': 'huber'}
+                loss_config = {"energy_loss": "huber"}
 
         loss_fn = {}
-        loss_fn['energy_loss'] = loss_config.get('energy_loss')
-        loss_fn['force_loss'] = loss_config.get('force_loss')
-        loss_fn['stress_loss'] = loss_config.get('stress_loss')
-        huber_delta = loss_config.get('huber_delta')
+        loss_fn["energy_loss"] = loss_config.get("energy_loss")
+        loss_fn["force_loss"] = loss_config.get("force_loss")
+        loss_fn["stress_loss"] = loss_config.get("stress_loss")
+        huber_delta = loss_config.get("huber_delta")
 
         for loss, loss_name in loss_fn.items():
-            if loss_name in ['l1', 'L1', 'mae', 'MAE']:
+            if loss_name in ["l1", "L1", "mae", "MAE"]:
                 loss_fn[loss] = torch.nn.L1Loss(reduction=reduction)
-            elif loss_name in ['mse', 'MSE']:
+            elif loss_name in ["mse", "MSE"]:
                 loss_fn[loss] = torch.nn.MSELoss(reduction=reduction)
-            elif loss_name in ['rmse', 'RMSE']:
+            elif loss_name in ["rmse", "RMSE"]:
                 loss_fn[loss] = RMSELoss(reduction=reduction)
-            elif loss_name in ['huber', 'HUBER', 'h', 'H']:
+            elif loss_name in ["huber", "HUBER", "h", "H"]:
                 loss_fn[loss] = HuberLoss(huber_delta=huber_delta)
 
         return loss_fn, loss_config
 
     def compute_loss(self, preds, data):
         lambda_config = self.json_data["NN"]
-        e_lambda = lambda_config.get('enr_lambda', 1)
-        f_lambda = lambda_config.get('frc_lambda', 1)
-        s_lambda = lambda_config.get('str_lambda', 1)
-        lambd = lambda_config.get('l2_lambda', 0)
+        e_lambda = lambda_config.get("enr_lambda", 1)
+        f_lambda = lambda_config.get("frc_lambda", 1)
+        s_lambda = lambda_config.get("str_lambda", 1)
+        lambd = lambda_config.get("l2_lambda", 0)
 
         loss = {"loss": []}
         energy_target = data["energy"].flatten()
-        loss["loss_e"] = self.loss_fn["energy_loss"](preds["energy"].flatten(),
-                                                     energy_target,
-                                                     tag="energy",
-                                                     num_atoms=data["num_nodes"])
+        loss["loss_e"] = self.loss_fn["energy_loss"](
+            preds["energy"].flatten(),
+            energy_target,
+            tag="energy",
+            num_atoms=data["num_nodes"],
+        )
         loss["loss"].append(e_lambda * loss["loss_e"])
 
         if "forces" in preds:
             force_target = data["forces"].flatten()
-            loss["loss_f"] = self.loss_fn["force_loss"](preds["forces"].flatten(),
-                                                        force_target,
-                                                        tag="forces")
+            loss["loss_f"] = self.loss_fn["force_loss"](
+                preds["forces"].flatten(), force_target, tag="forces"
+            )
             loss["loss"].append(f_lambda * loss["loss_f"])
         if "stress" in preds:
             stress_pred = preds["stress"].reshape(-1, 6)
@@ -303,7 +319,10 @@ class MPTrainer(BaseTrainer):
             stress_valid = data.get("stress_valid")
             if stress_valid is None:
                 raise KeyError("stress_valid is required for stress loss")
-            if not isinstance(stress_valid, torch.Tensor) or stress_valid.dtype != torch.bool:
+            if (
+                not isinstance(stress_valid, torch.Tensor)
+                or stress_valid.dtype != torch.bool
+            ):
                 raise TypeError("stress_valid must be a torch.bool tensor")
             if stress_valid.ndim != 1 or stress_valid.numel() != stress_pred.shape[0]:
                 raise ValueError(
@@ -317,9 +336,7 @@ class MPTrainer(BaseTrainer):
                 valid_stress_pred = stress_pred[stress_valid].reshape(-1)
                 valid_stress_target = stress_target[stress_valid].reshape(-1)
                 loss["loss_s"] = self.loss_fn["stress_loss"](
-                    valid_stress_pred,
-                    valid_stress_target,
-                    tag="stress"
+                    valid_stress_pred, valid_stress_target, tag="stress"
                 )
             else:
                 loss["loss_s"] = stress_pred[stress_valid].sum()
@@ -344,19 +361,21 @@ class DataBatchDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+
 def collate_identity(x):
     return x[0]
+
 
 class MPTrainer_V2(BaseTrainer):
     def __init__(self, json_data, rank=0, world_size=1):
         # multi-node version
         # Get node and local rank info from SLURM env vars
-        node_id = os.environ.get('SLURM_NODEID', 'unknown')
-        local_rank = os.environ.get('SLURM_LOCALID', rank)
+        node_id = os.environ.get("SLURM_NODEID", "unknown")
+        local_rank = os.environ.get("SLURM_LOCALID", rank)
 
         # multi-node version
-        log_filename = f'node{node_id}_gpu{local_rank}_global{rank}.log'
-        self.gpu_test_log = open(log_filename, 'w')
+        log_filename = f"node{node_id}_gpu{local_rank}_global{rank}.log"
+        self.gpu_test_log = open(log_filename, "w")
         atexit.register(self.close_log_file)
 
         self.epoch = 0
@@ -365,13 +384,16 @@ class MPTrainer_V2(BaseTrainer):
     # multi-node version
     def close_log_file(self):
         if self.gpu_test_log and not self.gpu_test_log.closed:
-            print(f"[{date()}] Closing log file for Rank {self.rank} (Node: {os.environ.get('SLURM_NODEID', 'unknown')}, "
-                    f"Local GPU: {os.environ.get('SLURM_LOCALID', self.rank)})", flush=True)
+            print(
+                f"[{date()}] Closing log file for Rank {self.rank} (Node: {os.environ.get('SLURM_NODEID', 'unknown')}, "
+                f"Local GPU: {os.environ.get('SLURM_LOCALID', self.rank)})",
+                flush=True,
+            )
             self.gpu_test_log.close()
 
     # multi-node version
     def configure_dataloader(self):
-        with open(self.json_data['enr_avg_per_element'], 'r', encoding='utf-8') as file:
+        with open(self.json_data["enr_avg_per_element"], encoding="utf-8") as file:
             content = file.read()
         enr_avg_per_element, uniq_element = ast.literal_eval(content)
 
@@ -385,13 +407,14 @@ class MPTrainer_V2(BaseTrainer):
         return data if isinstance(data, list) else [data]
 
     def configure_model(self):
-        """ Configure model using model configuration dictionary.
+        """Configure model using model configuration dictionary.
         Override BaseTrainer to fix multi-node DDP device_ids issue.
         """
-        from torch.nn.parallel import DistributedDataParallel as DDP
         import sys
 
-        model = self.set_model() # Set self.model
+        from torch.nn.parallel import DistributedDataParallel as DDP
+
+        model = self.set_model()  # Set self.model
         model.to(self.device)
 
         # Set criterion for direct force training
@@ -402,81 +425,93 @@ class MPTrainer_V2(BaseTrainer):
         except:
             pass
 
-        model_config = self.json_data['NN']
-        restart = model_config.get('restart')
+        model_config = self.json_data["NN"]
+        restart = model_config.get("restart")
 
-        evaluate_config = self.json_data['predict']
-        evaluate = evaluate_config.get('evaluate_tag')  # True or False(None)
+        evaluate_config = self.json_data["predict"]
+        evaluate = evaluate_config.get("evaluate_tag")  # True or False(None)
 
         if restart:
             rank = self.rank
             evaluate = False
-            self.json_data['predict']['evaluate_tag'] = False
+            self.json_data["predict"]["evaluate_tag"] = False
             model_ckpt = torch.load(model_config["fname_pkl"])
-            start_epoch = model_ckpt['loss']['epoch']
+            start_epoch = model_ckpt["loss"]["epoch"]
             try:
-                model.load_state_dict(model_ckpt['params'])
+                model.load_state_dict(model_ckpt["params"])
                 if self.ddp:
                     # Use local rank for device_ids in multi-node setup
-                    local_rank = int(os.environ.get('SLURM_LOCALID', self.rank % torch.cuda.device_count()))
+                    local_rank = int(
+                        os.environ.get(
+                            "SLURM_LOCALID", self.rank % torch.cuda.device_count()
+                        )
+                    )
                     model = DDP(model, device_ids=[local_rank])
             except RuntimeError as e:
-                input_json = model_ckpt['input.json']
-                fname = self.save_input_parameters(input_json, 'input_json_from_trained_model.txt')
+                input_json = model_ckpt["input.json"]
+                fname = self.save_input_parameters(
+                    input_json, "input_json_from_trained_model.txt"
+                )
                 print(e)
-                print(f'\n\033[31mSome of the parameter dimensions in the trained model you are trying to use')
-                print(f'do not match the current input parameters.')
-                print(f' -- Please check the ```{fname}``` file\033[0m\n')
+                print(
+                    "\n\033[31mSome of the parameter dimensions in the trained model you are trying to use"
+                )
+                print("do not match the current input parameters.")
+                print(f" -- Please check the ```{fname}``` file\033[0m\n")
                 sys.exit(1)
-            self.msg = f'\n\033[32mrestarting training from the {model_config["fname_pkl"]}\033[0m\n'
-            self.msg += f' -- restarting from the step where the loss was {model_ckpt["loss"]}\n'
+            self.msg = f"\n\033[32mrestarting training from the {model_config['fname_pkl']}\033[0m\n"
+            self.msg += f" -- restarting from the step where the loss was {model_ckpt['loss']}\n"
 
         if evaluate:  # True or False(None)
             rank = 0
             start_epoch = 0
             model_ckpt = torch.load(evaluate_config["model"], map_location=self.device)
-            model.load_state_dict(model_ckpt['params'])
+            model.load_state_dict(model_ckpt["params"])
             model.eval()
-            self.msg = f'\n\033[32mevaluating the {evaluate_config["model"]}\033[0m\n'
+            self.msg = f"\n\033[32mevaluating the {evaluate_config['model']}\033[0m\n"
 
-        if not restart and not evaluate: # initial train case
+        if not restart and not evaluate:  # initial train case
             rank = self.rank
             start_epoch = 0
             model_ckpt = None
             if self.ddp:
                 # Use local rank for device_ids in multi-node setup
-                local_rank = int(os.environ.get('SLURM_LOCALID', self.rank % torch.cuda.device_count()))
+                local_rank = int(
+                    os.environ.get(
+                        "SLURM_LOCALID", self.rank % torch.cuda.device_count()
+                    )
+                )
                 model = DDP(model, device_ids=[local_rank])
-            self.msg = f'\n\033[32minitializing training, results will be saved in the {model_config["fname_pkl"]}\033[0m\n'
+            self.msg = f"\n\033[32minitializing training, results will be saved in the {model_config['fname_pkl']}\033[0m\n"
 
         # Check the number of parameters
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        self.msg += f'\nnumber of parameters:\n\033[33m -- model ({self.json_data["model"]})  {n_params}\033[0m\n'
+        self.msg += f"\nnumber of parameters:\n\033[33m -- model ({self.json_data['model']})  {n_params}\033[0m\n"
 
         if rank == 0:
             print(self.msg)
 
         return model, n_params, model_ckpt, start_epoch
 
-    def train_one_epoch(self, mode='train'):
-        if mode == 'train':
+    def train_one_epoch(self, mode="train"):
+        if mode == "train":
             self.model.train()
             backprop = True
-            loss_log_config = self.log_config['train']
-            self.ckpt['train_scale_shift'] = {
-                    k: [] for k in self.enr_avg_per_element.keys()
+            loss_log_config = self.log_config["train"]
+            self.ckpt["train_scale_shift"] = {
+                k: [] for k in self.enr_avg_per_element.keys()
             }
             # data_files = train_files
             folder_path = self.json_data["ntrain"]
         else:
             self.model.eval()
             backprop = False
-            loss_log_config = self.log_config['valid']
+            loss_log_config = self.log_config["valid"]
             folder_path = self.json_data["nvalid"]
-            self.ckpt['valid_scale_shift'] = {
-                    k: [] for k in self.enr_avg_per_element.keys()
-                }
-            self.ckpt['valid_scale_shift_origin'] = []
+            self.ckpt["valid_scale_shift"] = {
+                k: [] for k in self.enr_avg_per_element.keys()
+            }
+            self.ckpt["valid_scale_shift_origin"] = []
 
         self.gpu_test_log.flush()
 
@@ -501,11 +536,19 @@ class MPTrainer_V2(BaseTrainer):
             use_internal_sampler = False
 
         if not files:
-            print(f"WARNING: RANK {self.rank} has no files to process!", file=self.gpu_test_log)
+            print(
+                f"WARNING: RANK {self.rank} has no files to process!",
+                file=self.gpu_test_log,
+            )
             if self.world_size > 1:
                 torch.distributed.barrier()
-            return {key: torch.tensor(0.0, device=self.device) for key in loss_log_config}
-        print(f"RANK {self.rank}: Processing {len(files)} files: {files}", file=self.gpu_test_log)
+            return {
+                key: torch.tensor(0.0, device=self.device) for key in loss_log_config
+            }
+        print(
+            f"RANK {self.rank}: Processing {len(files)} files: {files}",
+            file=self.gpu_test_log,
+        )
         self.gpu_test_log.flush()
 
         # with torch.set_grad_enabled(mode == 'train'):
@@ -517,24 +560,36 @@ class MPTrainer_V2(BaseTrainer):
                 self.gpu_test_log.flush()
                 continue
             if not data_batch:
-                print(f"WARNING: Empty data batch for {filename}", file=self.gpu_test_log)
+                print(
+                    f"WARNING: Empty data batch for {filename}", file=self.gpu_test_log
+                )
                 self.gpu_test_log.flush()
                 continue
 
             dataset = DataBatchDataset(data_batch)
 
             if use_internal_sampler and self.world_size > 1:
-                data_sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=self.rank, shuffle=(mode == 'train'))
+                data_sampler = DistributedSampler(
+                    dataset,
+                    num_replicas=self.world_size,
+                    rank=self.rank,
+                    shuffle=(mode == "train"),
+                )
                 data_sampler.set_epoch(self.epoch)
                 shuffle = False
             else:
                 data_sampler = None
-                shuffle = (mode == 'train')
+                shuffle = mode == "train"
 
             data_loader = TorchLoader(
-                dataset, batch_size=1, shuffle=shuffle, drop_last=False,
-                pin_memory=True, num_workers=0, sampler=data_sampler,
-                collate_fn=collate_identity
+                dataset,
+                batch_size=1,
+                shuffle=shuffle,
+                drop_last=False,
+                pin_memory=True,
+                num_workers=0,
+                sampler=data_sampler,
+                collate_fn=collate_identity,
             )
 
             for data in data_loader:
@@ -546,19 +601,23 @@ class MPTrainer_V2(BaseTrainer):
                 preds = self.scale_shift(preds, data, mode)
 
                 loss_dict = self.compute_loss(preds, data)
-                loss = loss_dict['loss']
+                loss = loss_dict["loss"]
 
                 if backprop:
                     self.optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_value_(self.model.parameters(), clip_value=0.5)
+                    torch.nn.utils.clip_grad_value_(
+                        self.model.parameters(), clip_value=0.5
+                    )
                     self.optimizer.step()
 
                     if self.ema is not None:
                         self.ema.update()
 
                 for l in loss_log_config:
-                    epoch_loss_dict[l].append(loss_dict.get(l, torch.nan).detach().cpu())
+                    epoch_loss_dict[l].append(
+                        loss_dict.get(l, torch.nan).detach().cpu()
+                    )
 
                 data.clear()
                 del data, preds, loss_dict
@@ -567,7 +626,7 @@ class MPTrainer_V2(BaseTrainer):
 
             data_batch.clear()
             del data_batch, dataset, data_loader
-            if 'data_sampler' in locals() and data_sampler is not None:
+            if "data_sampler" in locals() and data_sampler is not None:
                 del data_sampler
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
@@ -585,8 +644,14 @@ class MPTrainer_V2(BaseTrainer):
             tensor_list = epoch_loss_dict[key]
 
             if len(tensor_list) > 0:
-                local_loss_sum = torch.sum(torch.stack([t.clone().detach().to(self.device) for t in tensor_list]))
-                local_count = torch.tensor(len(tensor_list), device=self.device, dtype=torch.float)
+                local_loss_sum = torch.sum(
+                    torch.stack(
+                        [t.clone().detach().to(self.device) for t in tensor_list]
+                    )
+                )
+                local_count = torch.tensor(
+                    len(tensor_list), device=self.device, dtype=torch.float
+                )
             else:
                 local_loss_sum = torch.tensor(0.0, device=self.device)
                 local_count = torch.tensor(0.0, device=self.device)
@@ -596,10 +661,17 @@ class MPTrainer_V2(BaseTrainer):
 
             if self.world_size > 1:
                 try:
-                    torch.distributed.all_reduce(global_loss_sum, op=torch.distributed.ReduceOp.SUM)
-                    torch.distributed.all_reduce(global_count, op=torch.distributed.ReduceOp.SUM)
+                    torch.distributed.all_reduce(
+                        global_loss_sum, op=torch.distributed.ReduceOp.SUM
+                    )
+                    torch.distributed.all_reduce(
+                        global_count, op=torch.distributed.ReduceOp.SUM
+                    )
                 except Exception as e:
-                    print(f"ERROR during all_reduce for key {key}: {e}", file=self.gpu_test_log)
+                    print(
+                        f"ERROR during all_reduce for key {key}: {e}",
+                        file=self.gpu_test_log,
+                    )
                     self.gpu_test_log.flush()
                     global_loss_sum = torch.tensor(0.0, device=self.device)
                     global_count = torch.tensor(0.0, device=self.device)
@@ -607,7 +679,7 @@ class MPTrainer_V2(BaseTrainer):
             if global_count > 0:
                 final_avg_loss = global_loss_sum / global_count
             else:
-                final_avg_loss = torch.tensor(float('nan'), device=self.device)
+                final_avg_loss = torch.tensor(float("nan"), device=self.device)
                 print(f"WARNING: No data for {key}!", file=self.gpu_test_log)
 
             final_epoch_loss_dict[key] = final_avg_loss
@@ -615,30 +687,32 @@ class MPTrainer_V2(BaseTrainer):
 
         return final_epoch_loss_dict
 
-    def configure_loss(self, reduction='mean'):
+    def configure_loss(self, reduction="mean"):
         nn_config = self.json_data.get("NN")
         loss_config = nn_config.get("loss_config")
         if loss_config == None:
             if self.json_data["regress_forces"]:
-                loss_config = {'energy_loss': 'huber',
-                               'force_loss': 'huber',
-                               'stress_loss' : 'huber'}
+                loss_config = {
+                    "energy_loss": "huber",
+                    "force_loss": "huber",
+                    "stress_loss": "huber",
+                }
             else:
-                loss_config = {'energy_loss': 'huber'}
+                loss_config = {"energy_loss": "huber"}
         loss_fn = {}
-        loss_fn['energy_loss'] = loss_config.get('energy_loss')
-        loss_fn['force_loss'] = loss_config.get('force_loss')
-        loss_fn['stress_loss'] = loss_config.get('stress_loss')
-        huber_delta = loss_config.get('huber_delta')
+        loss_fn["energy_loss"] = loss_config.get("energy_loss")
+        loss_fn["force_loss"] = loss_config.get("force_loss")
+        loss_fn["stress_loss"] = loss_config.get("stress_loss")
+        huber_delta = loss_config.get("huber_delta")
         compute_tag = "basic"
         for loss, loss_name in loss_fn.items():
-            if loss_name in ['l1', 'L1', 'mae', 'MAE']:
+            if loss_name in ["l1", "L1", "mae", "MAE"]:
                 loss_fn[loss] = torch.nn.L1Loss(reduction=reduction)
-            elif loss_name in ['mse', 'MSE']:
+            elif loss_name in ["mse", "MSE"]:
                 loss_fn[loss] = torch.nn.MSELoss(reduction=reduction)
-            elif loss_name in ['rmse', 'RMSE']:
+            elif loss_name in ["rmse", "RMSE"]:
                 loss_fn[loss] = RMSELoss(reduction=reduction)
-            elif loss_name in ['huber', 'HUBER', 'h', 'H']:
+            elif loss_name in ["huber", "HUBER", "h", "H"]:
                 loss_fn[loss] = HuberLoss(huber_delta=huber_delta)
                 compute_tag = "huber"
         if compute_tag == "huber":
@@ -650,24 +724,26 @@ class MPTrainer_V2(BaseTrainer):
 
     def compute_loss_huber(self, preds, data):
         lambda_config = self.json_data["NN"]
-        e_lambda = lambda_config.get('enr_lambda', 1)
-        f_lambda = lambda_config.get('frc_lambda', 1)
-        s_lambda = lambda_config.get('str_lambda', 1)
-        lambd = lambda_config.get('l2_lambda', 0)
+        e_lambda = lambda_config.get("enr_lambda", 1)
+        f_lambda = lambda_config.get("frc_lambda", 1)
+        s_lambda = lambda_config.get("str_lambda", 1)
+        lambd = lambda_config.get("l2_lambda", 0)
 
         loss = {"loss": []}
         energy_target = data["energy"].flatten()
-        loss["loss_e"] = self.loss_fn["energy_loss"](preds["energy"].flatten(),
-                                                     energy_target,
-                                                     tag="energy",
-                                                     num_atoms=data["num_nodes"])
+        loss["loss_e"] = self.loss_fn["energy_loss"](
+            preds["energy"].flatten(),
+            energy_target,
+            tag="energy",
+            num_atoms=data["num_nodes"],
+        )
         loss["loss"].append(e_lambda * loss["loss_e"])
 
         if "forces" in preds:
             force_target = data["forces"].flatten()
-            loss["loss_f"] = self.loss_fn["force_loss"](preds["forces"].flatten(),
-                                                        force_target,
-                                                        tag="forces")
+            loss["loss_f"] = self.loss_fn["force_loss"](
+                preds["forces"].flatten(), force_target, tag="forces"
+            )
             loss["loss"].append(f_lambda * loss["loss_f"])
         if "stress" in preds:
             stress_pred = preds["stress"].reshape(-1, 6)
@@ -675,7 +751,10 @@ class MPTrainer_V2(BaseTrainer):
             stress_valid = data.get("stress_valid")
             if stress_valid is None:
                 raise KeyError("stress_valid is required for stress loss")
-            if not isinstance(stress_valid, torch.Tensor) or stress_valid.dtype != torch.bool:
+            if (
+                not isinstance(stress_valid, torch.Tensor)
+                or stress_valid.dtype != torch.bool
+            ):
                 raise TypeError("stress_valid must be a torch.bool tensor")
             if stress_valid.ndim != 1 or stress_valid.numel() != stress_pred.shape[0]:
                 raise ValueError(
@@ -689,9 +768,7 @@ class MPTrainer_V2(BaseTrainer):
                 valid_stress_pred = stress_pred[stress_valid].reshape(-1)
                 valid_stress_target = stress_target[stress_valid].reshape(-1)
                 loss["loss_s"] = self.loss_fn["stress_loss"](
-                    valid_stress_pred,
-                    valid_stress_target,
-                    tag="stress"
+                    valid_stress_pred, valid_stress_target, tag="stress"
                 )
             else:
                 loss["loss_s"] = stress_pred[stress_valid].sum()
@@ -707,10 +784,10 @@ class MPTrainer_V2(BaseTrainer):
 
     def compute_loss_basic(self, preds, data):
         lambda_config = self.json_data["NN"]
-        e_lambda = lambda_config.get('enr_lambda', 1)
-        f_lambda = lambda_config.get('frc_lambda', 1)
-        s_lambda = lambda_config.get('str_lambda', 1)
-        lambd = lambda_config.get('l2_lambda', 0)
+        e_lambda = lambda_config.get("enr_lambda", 1)
+        f_lambda = lambda_config.get("frc_lambda", 1)
+        s_lambda = lambda_config.get("str_lambda", 1)
+        lambd = lambda_config.get("l2_lambda", 0)
 
         loss = {"loss": []}
         energy_target = data["energy"].flatten()
@@ -732,7 +809,10 @@ class MPTrainer_V2(BaseTrainer):
             stress_valid = data.get("stress_valid")
             if stress_valid is None:
                 raise KeyError("stress_valid is required for stress loss")
-            if not isinstance(stress_valid, torch.Tensor) or stress_valid.dtype != torch.bool:
+            if (
+                not isinstance(stress_valid, torch.Tensor)
+                or stress_valid.dtype != torch.bool
+            ):
                 raise TypeError("stress_valid must be a torch.bool tensor")
             if stress_valid.ndim != 1 or stress_valid.numel() != stress_pred.shape[0]:
                 raise ValueError(
@@ -751,8 +831,10 @@ class MPTrainer_V2(BaseTrainer):
             else:
                 loss["loss_s"] = stress_pred[stress_valid].sum()
             loss["loss"].append(s_lambda * loss["loss_s"])
-        elif (hasattr(self.model, "training_mode_for_lammps") \
-                and self.model.training_mode_for_lammps):
+        elif (
+            hasattr(self.model, "training_mode_for_lammps")
+            and self.model.training_mode_for_lammps
+        ):
             loss["loss_s"] = torch.tensor(
                 0.0, device=preds["stress"].device, requires_grad=True
             )

@@ -14,5 +14,5 @@ LAMMPS wrappers:
 from bam_torch.lammps.lammps_bam import LAMMPS_BAM
 
 __all__ = [
-    'LAMMPS_BAM',
+    "LAMMPS_BAM",
 ]

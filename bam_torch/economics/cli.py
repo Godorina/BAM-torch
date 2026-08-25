@@ -10,12 +10,28 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run catalyst carbon social cost reporting with the RF SCC metamodel."
     )
-    parser.add_argument("--scc-data", required=True, help="Path to socialcostcarbon.csv.")
-    parser.add_argument("--catalyst-data", required=True, help="Path to catalysts_formationE.csv.")
-    parser.add_argument("--out-dir", default="outputs/catalyst_economics", help="Output directory.")
-    parser.add_argument("--scc-draws", help="Optional precomputed SCC draws in USD/tCO2 (.npy, .csv, or text).")
-    parser.add_argument("--save-scc-draws", help="Optional path to save RF-generated SCC draws.")
-    parser.add_argument("--n-draws", type=int, default=20_000, help="Number of synthetic SCC draws when training RF.")
+    parser.add_argument(
+        "--scc-data", required=True, help="Path to socialcostcarbon.csv."
+    )
+    parser.add_argument(
+        "--catalyst-data", required=True, help="Path to catalysts_formationE.csv."
+    )
+    parser.add_argument(
+        "--out-dir", default="outputs/catalyst_economics", help="Output directory."
+    )
+    parser.add_argument(
+        "--scc-draws",
+        help="Optional precomputed SCC draws in USD/tCO2 (.npy, .csv, or text).",
+    )
+    parser.add_argument(
+        "--save-scc-draws", help="Optional path to save RF-generated SCC draws."
+    )
+    parser.add_argument(
+        "--n-draws",
+        type=int,
+        default=20_000,
+        help="Number of synthetic SCC draws when training RF.",
+    )
     return parser.parse_args()
 
 

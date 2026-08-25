@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, overload
 
 import numpy as np
 
@@ -24,9 +25,9 @@ class SCCDistributionResult:
 
 def _require_rf_deps():
     try:
-        import pandas as pd  # type: ignore
-        from sklearn.ensemble import RandomForestRegressor  # type: ignore
-        from sklearn.model_selection import KFold  # type: ignore
+        import pandas as pd
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.model_selection import KFold
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise ImportError(
             "Catalyst economics SCC RF requires optional dependencies: "
@@ -45,13 +46,49 @@ def load_scc_draws(path: str | Path) -> np.ndarray:
     return np.loadtxt(path, delimiter="," if path.suffix == ".csv" else None)
 
 
-def save_scc_draws(path: str | Path, draws: Sequence[float]) -> None:
+def save_scc_draws(path: str | Path, draws: Sequence[float] | np.ndarray) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".npy":
         np.save(path, np.asarray(draws, dtype=float))
     else:
-        np.savetxt(path, np.asarray(draws, dtype=float), delimiter="," if path.suffix == ".csv" else " ")
+        np.savetxt(
+            path,
+            np.asarray(draws, dtype=float),
+            delimiter="," if path.suffix == ".csv" else " ",
+        )
+
+
+@overload
+def build_scc_distribution(
+    scc_csv: str | Path,
+    *,
+    out_dir: str | Path | None = None,
+    n_draws: int = 20_000,
+    rf_seed: int = 0,
+    synth_seed: int = 42,
+    n_estimators: int = 500,
+    min_samples_leaf: int = 5,
+    save_estimates: bool = True,
+    verbose: bool = True,
+    return_result: Literal[False] = False,
+) -> np.ndarray: ...
+
+
+@overload
+def build_scc_distribution(
+    scc_csv: str | Path,
+    *,
+    out_dir: str | Path | None = None,
+    n_draws: int = 20_000,
+    rf_seed: int = 0,
+    synth_seed: int = 42,
+    n_estimators: int = 500,
+    min_samples_leaf: int = 5,
+    save_estimates: bool = True,
+    verbose: bool = True,
+    return_result: Literal[True],
+) -> SCCDistributionResult: ...
 
 
 def build_scc_distribution(
@@ -112,7 +149,9 @@ def build_scc_distribution(
     w = (d["quality"] * d["censor"]).clip(lower=1e-6).values
 
     if verbose:
-        print(f"[1] SCC training rows {len(d):,} | features {len(feats)} | target log10(SCC $/tCO2)")
+        print(
+            f"[1] SCC training rows {len(d):,} | features {len(feats)} | target log10(SCC $/tCO2)"
+        )
 
     def mk(seed: int):
         return RandomForestRegressor(
@@ -167,7 +206,10 @@ def build_scc_distribution(
         ("(A) all literature", synth(all_idx)),
         ("(B) recent 2016+", synth(recent)),
         ("(C) +Drupp discounting", synth(recent, drupp=True)),
-        ("(D) +persistent damages = headline", synth(recent, drupp=True, persistent=True)),
+        (
+            "(D) +persistent damages = headline",
+            synth(recent, drupp=True, persistent=True),
+        ),
     ]
 
     estimates: list[dict[str, float | int | str]] = []
@@ -187,7 +229,9 @@ def build_scc_distribution(
     if out_dir is not None and save_estimates:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(estimates).to_csv(out / "our_scc_estimates.csv", index=False, encoding="utf-8-sig")
+        pd.DataFrame(estimates).to_csv(
+            out / "our_scc_estimates.csv", index=False, encoding="utf-8-sig"
+        )
 
     if verbose:
         print(

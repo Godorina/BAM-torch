@@ -5,7 +5,6 @@
 ###########################################################################################
 
 import collections
-from typing import List, Union
 
 import torch
 from e3nn import o3
@@ -15,7 +14,7 @@ _INPUT = collections.namedtuple("_INPUT", "tensor, start, stop")
 
 
 def _wigner_nj(
-    irrepss: List[o3.Irreps],
+    irrepss: list[o3.Irreps],
     normalization: str = "component",
     filter_ir_mid=None,
     dtype=None,
@@ -87,8 +86,8 @@ def _wigner_nj(
 
 
 def U_matrix_real(
-    irreps_in: Union[str, o3.Irreps],
-    irreps_out: Union[str, o3.Irreps],
+    irreps_in: str | o3.Irreps,
+    irreps_out: str | o3.Irreps,
     correlation: int,
     normalization: str = "component",
     filter_ir_mid=None,

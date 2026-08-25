@@ -5,7 +5,6 @@
 # This program is distributed under the MIT License (see MIT.md)
 ###########################################################################################
 
-from typing import Dict, Optional, Union
 
 import opt_einsum_fx
 import torch
@@ -15,7 +14,6 @@ from e3nn.util.codegen import CodeGenMixin
 from e3nn.util.jit import compile_mode
 
 from bam_torch.utils.cg import U_matrix_real
-
 
 BATCH_EXAMPLE = 10
 ALPHABET = ["w", "x", "v", "n", "z", "r", "t", "y", "u", "o", "p", "s"]
@@ -27,12 +25,12 @@ class SymmetricContraction(CodeGenMixin, torch.nn.Module):
         self,
         irreps_in: o3.Irreps,
         irreps_out: o3.Irreps,
-        correlation: Union[int, Dict[str, int]],
+        correlation: int | dict[str, int],
         irrep_normalization: str = "component",
         path_normalization: str = "element",
-        internal_weights: Optional[bool] = None,
-        shared_weights: Optional[bool] = None,
-        num_elements: Optional[int] = None,
+        internal_weights: bool | None = None,
+        shared_weights: bool | None = None,
+        num_elements: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -92,8 +90,8 @@ class Contraction(torch.nn.Module):
         irrep_out: o3.Irreps,
         correlation: int,
         internal_weights: bool = True,
-        num_elements: Optional[int] = None,
-        weights: Optional[torch.Tensor] = None,
+        num_elements: int | None = None,
+        weights: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
 
@@ -229,7 +227,7 @@ class Contraction(torch.nn.Module):
             out = contract_features(c_tensor, x)
 
         return out.view(out.shape[0], -1)
-        #return out.reshape(out.shape[0], -1)
+        # return out.reshape(out.shape[0], -1)
 
     def U_tensors(self, nu: int):
         return dict(self.named_buffers())[f"U_matrix_{nu}"]

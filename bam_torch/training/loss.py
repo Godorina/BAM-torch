@@ -1,17 +1,15 @@
 import torch
 import torch.distributed as dist
-from typing import Any, Callable, Dict, List, Optional, Type, Union, Tuple
-from bam_torch.utils.utils import apply_along_axis
 
 
 class RMSELoss(torch.nn.Module):
     def __init__(self, reduction="mean"):
-        super(RMSELoss,self).__init__()
+        super().__init__()
         self.mse = torch.nn.MSELoss(reduction=reduction)
         self.eps = 1e-7
 
-    def forward(self,y,y_hat):
-        return torch.sqrt(self.mse(y,y_hat) + self.eps)
+    def forward(self, y, y_hat):
+        return torch.sqrt(self.mse(y, y_hat) + self.eps)
 
 
 def l2_regularization(params):
@@ -23,7 +21,7 @@ def is_ddp_enabled():
     return dist.is_initialized() and dist.get_world_size() > 1
 
 
-def reduce_loss(raw_loss: torch.Tensor, ddp: Optional[bool] = None) -> torch.Tensor:
+def reduce_loss(raw_loss: torch.Tensor, ddp: bool | None = None) -> torch.Tensor:
     """
     Reduces an element-wise loss tensor.
 
@@ -53,7 +51,7 @@ class HuberLoss(torch.nn.Module):
         self.huber_delta = huber_delta
 
     def forward(
-        self, pred, target, tag, num_atoms = None, ddp: Optional[bool] = None
+        self, pred, target, tag, num_atoms=None, ddp: bool | None = None
     ) -> torch.Tensor:
 
         if tag == "energy":
@@ -81,16 +79,12 @@ class HuberLoss(torch.nn.Module):
         if tag == "forces":
             if ddp:
                 loss_forces = torch.nn.functional.huber_loss(
-                    pred, target,
-                    reduction="none",
-                    delta=self.huber_delta
+                    pred, target, reduction="none", delta=self.huber_delta
                 )
                 loss_forces = reduce_loss(loss_forces, ddp)
             else:
                 loss_forces = torch.nn.functional.huber_loss(
-                    pred, target,
-                    reduction="mean",
-                    delta=self.huber_delta
+                    pred, target, reduction="mean", delta=self.huber_delta
                 )
                 # print(' pred["forces"] : ', pred["forces"] )
                 # print(' target["forces"] : ', target["forces"] )
@@ -99,16 +93,12 @@ class HuberLoss(torch.nn.Module):
         if tag == "stress":
             if ddp:
                 loss_stress = torch.nn.functional.huber_loss(
-                    pred, target,
-                    reduction="none",
-                    delta=self.huber_delta
+                    pred, target, reduction="none", delta=self.huber_delta
                 )
                 loss_stress = reduce_loss(loss_stress, ddp)
             else:
                 loss_stress = torch.nn.functional.huber_loss(
-                    pred, target,
-                    reduction="mean",
-                    delta=self.huber_delta
+                    pred, target, reduction="mean", delta=self.huber_delta
                 )
                 # print(' pred["stress"] : ', pred["stress"] )
                 # print(' target["stress"] : ', target["stress"] )
@@ -128,67 +118,76 @@ class NLLLoss(torch.nn.Module):
         super().__init__()
 
     def forward(
-        self, preds, targets, tag='stress', ddp: Optional[bool] = None
+        self, preds, targets, tag="stress", ddp: bool | None = None
     ) -> torch.Tensor:
 
         # Energy
-        if tag == 'energy':
-            prd_enr = preds['energy'].flatten()
-            tgt_enr = targets['energy'].flatten()
-            enr_var = preds['energy_var']
+        if tag == "energy":
+            prd_enr = preds["energy"].flatten()
+            tgt_enr = targets["energy"].flatten()
+            enr_var = preds["energy_var"]
 
-            diff_enr = (tgt_enr - prd_enr)
-            energy_term = (torch.einsum('i,i->i', diff_enr, diff_enr) / enr_var).mean()
+            diff_enr = tgt_enr - prd_enr
+            energy_term = (torch.einsum("i,i->i", diff_enr, diff_enr) / enr_var).mean()
             energy_log_term = torch.log(enr_var).mean()
 
             loss_dict = {
-                'loss_e': energy_term,
-                'log_e' : energy_log_term,
-                'enr_var': enr_var.mean(),
+                "loss_e": energy_term,
+                "log_e": energy_log_term,
+                "enr_var": enr_var.mean(),
             }
 
         # Forces
-        if tag == 'forces' or tag == 'force':
-            prd_frc = preds['forces']
-            tgt_frc = targets['forces'] #.flatten()
-            frc_var = preds['forces_var']
+        if tag == "forces" or tag == "force":
+            prd_frc = preds["forces"]
+            tgt_frc = targets["forces"]  # .flatten()
+            frc_var = preds["forces_var"]
 
             def map_lower_triangle(l):
-                return torch.tensor([
-                    [l[0], 0.0, 0.0],
-                    [l[5], l[1], 0.0],
-                    [l[4], l[3], l[2]],
-                ])
+                return torch.tensor(
+                    [
+                        [l[0], 0.0, 0.0],
+                        [l[5], l[1], 0.0],
+                        [l[4], l[3], l[2]],
+                    ]
+                )
+
             eps = 1e-3
             identity = torch.eye(3).to(frc_var.device)
-            frc_var_mapped = torch.stack([map_lower_triangle(l) for l in frc_var]).to(frc_var.device)
-            frc_var_squared = torch.einsum('bij,bkj->bik', frc_var_mapped, frc_var_mapped)
+            frc_var_mapped = torch.stack([map_lower_triangle(l) for l in frc_var]).to(
+                frc_var.device
+            )
+            frc_var_squared = torch.einsum(
+                "bij,bkj->bik", frc_var_mapped, frc_var_mapped
+            )
             frc_var_squared += eps * identity
 
-            diff_frc = (tgt_frc - prd_frc)
+            diff_frc = tgt_frc - prd_frc
             inv_cov = torch.linalg.inv(frc_var_squared)
-            force_term = torch.einsum('bi,bij,bj->b', diff_frc, inv_cov, diff_frc).mean()
+            force_term = torch.einsum(
+                "bi,bij,bj->b", diff_frc, inv_cov, diff_frc
+            ).mean()
             _, force_log_term = torch.linalg.slogdet(frc_var_squared)
             force_log_term = force_log_term.mean()
 
             loss_dict = {
-                'loss_f': force_term,
-                'log_f' : force_log_term,
-                'frc_var': frc_var.mean(),
+                "loss_f": force_term,
+                "log_f": force_log_term,
+                "frc_var": frc_var.mean(),
             }
 
         # Stress
-        if tag == 'stress':
+        if tag == "stress":
             if type(preds) == dict:
-                prd_sts = preds['stress'].flatten()
-                tgt_sts = targets['stress'].flatten()
+                prd_sts = preds["stress"].flatten()
+                tgt_sts = targets["stress"].flatten()
             else:
                 prd_sts = preds
                 tgt_sts = targets
 
-            diff_sts = (tgt_sts - prd_sts)
-            stress_term = torch.einsum('i,i->i', diff_sts, diff_sts).mean()
+            diff_sts = tgt_sts - prd_sts
+            stress_term = torch.einsum("i,i->i", diff_sts, diff_sts).mean()
 
-            loss_dict = {'loss_s': stress_term}
+            loss_dict = {"loss_s": stress_term}
 
         return loss_dict

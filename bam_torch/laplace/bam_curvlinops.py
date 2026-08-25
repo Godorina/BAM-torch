@@ -13,9 +13,9 @@ from curvlinops import (
     KFACLinearOperator,
 )
 from curvlinops._base import _LinearOperator
+from laplace.utils import Kron, Likelihood
 from torch import nn
 
-from laplace.utils import Kron, Likelihood
 from .bam_curvature import CurvatureInterface, EFInterface, GGNInterface
 
 
@@ -35,12 +35,17 @@ class CurvlinopsInterface(CurvatureInterface):
         num_samples: int = 1,
     ) -> None:
         super().__init__(
-            model, likelihood, last_layer, 
-            subnetwork_indices, dict_key_x, dict_key_y, 
-            stochastic=stochastic, 
-            scale_info=scale_info, 
+            model,
+            likelihood,
+            last_layer,
+            subnetwork_indices,
+            dict_key_x,
+            dict_key_y,
+            stochastic=stochastic,
+            scale_info=scale_info,
             num_samples=num_samples,
         )
+
     @property
     def _kron_fisher_type(self) -> str:
         raise NotImplementedError
@@ -163,10 +168,14 @@ class CurvlinopsGGN(CurvlinopsInterface, GGNInterface):
         num_samples: int = 1,
     ) -> None:
         super().__init__(
-            model, likelihood, last_layer, 
-            subnetwork_indices, dict_key_x, dict_key_y, 
-            stochastic=stochastic, 
-            scale_info=scale_info, 
+            model,
+            likelihood,
+            last_layer,
+            subnetwork_indices,
+            dict_key_x,
+            dict_key_y,
+            stochastic=stochastic,
+            scale_info=scale_info,
             num_samples=num_samples,
         )
         self.stochastic = stochastic

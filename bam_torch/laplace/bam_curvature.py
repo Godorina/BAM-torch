@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Callable, MutableMapping
+from collections.abc import Callable, MutableMapping
+from typing import Any
 
 import torch
+from laplace.utils import Kron, Likelihood
 from torch import nn
 from torch.nn import CrossEntropyLoss, MSELoss
-
-from laplace.utils import Kron, Likelihood
 
 
 class CurvatureInterface:
@@ -51,7 +51,7 @@ class CurvatureInterface:
         subnetwork_indices: torch.LongTensor | None = None,
         dict_key_x: str = "input_ids",
         dict_key_y: str = "labels",
-        scale_info: dict[str, Any] | None = None
+        scale_info: dict[str, Any] | None = None,
     ):
         assert likelihood in [Likelihood.REGRESSION, Likelihood.CLASSIFICATION]
         self.likelihood: Likelihood | str = likelihood
@@ -82,9 +82,9 @@ class CurvatureInterface:
             k: v for k, v in self.model.named_buffers()
         }
 
-        self.e_corr = scale_info['e_corr']
-        self.element_wise = scale_info['element_wise']
-        self.enr_avg_per_element = scale_info['enr_avg_per_element']
+        self.e_corr = scale_info["e_corr"]
+        self.element_wise = scale_info["element_wise"]
+        self.enr_avg_per_element = scale_info["enr_avg_per_element"]
 
     @property
     def _model(self) -> nn.Module:
@@ -94,7 +94,7 @@ class CurvatureInterface:
         self,
         x: torch.Tensor | MutableMapping[str, torch.Tensor | Any],
         enable_backprop: bool = False,
-        dict_key_y: str | None = 'energy',
+        dict_key_y: str | None = "energy",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute Jacobians \\(\\nabla_{\\theta} f(x;\\theta)\\) at current parameter \\(\\theta\\),
         via torch.func.
@@ -115,43 +115,40 @@ class CurvatureInterface:
         """
 
         out = self.model(x)
-        if dict_key_y == 'energy':
+        if dict_key_y == "energy":
             out = out[dict_key_y]
-            species = x['species']
+            species = x["species"]
             node_enr_avg = torch.tensor(
-                [self.enr_avg_per_element[int(iz)] 
-                for iz in species]
+                [self.enr_avg_per_element[int(iz)] for iz in species]
             ).sum()
             if self.element_wise:
-                e_corr = torch.tensor(
-                    [self.e_corr[int(iz)] for iz in species]
-                ).sum()
+                e_corr = torch.tensor([self.e_corr[int(iz)] for iz in species]).sum()
             else:
                 e_corr = self.e_corr
             out = out + node_enr_avg + e_corr
             output_dim = out.shape[0]
             batch_size, _, _ = x["cell"].shape
             out = out.view(batch_size, output_dim)
-        elif dict_key_y == 'forces_x':
-            out = out['forces'][:, 0] 
+        elif dict_key_y == "forces_x":
+            out = out["forces"][:, 0]
             output_dim = out.shape[0]
             batch_size, _, _ = x["cell"].shape
             out = out.view(batch_size, output_dim)
-        elif dict_key_y == 'forces_y':
-            out = out['forces'][:, 1]
+        elif dict_key_y == "forces_y":
+            out = out["forces"][:, 1]
             output_dim = out.shape[0]
             batch_size, _, _ = x["cell"].shape
             out = out.view(batch_size, output_dim)
-        elif dict_key_y == 'forces_z':
-            out = out['forces'][:, 2]  
+        elif dict_key_y == "forces_z":
+            out = out["forces"][:, 2]
             output_dim = out.shape[0]
             batch_size, _, _ = x["cell"].shape
             out = out.view(batch_size, output_dim)
         else:
             batch_size, output_dim = out.shape
-        #input_dim = x.shape[1]
-            #params = dict(self.model.named_parameters())
-            
+        # input_dim = x.shape[1]
+        # params = dict(self.model.named_parameters())
+
         Js = {}
         for name, param in self.params_dict.items():
             param_shape = param.shape
@@ -160,13 +157,23 @@ class CurvatureInterface:
                 for j in range(output_dim):
                     grad_outputs = torch.zeros_like(out)
                     grad_outputs[i, j] = 1.0
-                    grad = torch.autograd.grad(out, param, grad_outputs=grad_outputs, retain_graph=True, allow_unused=True)
+                    grad = torch.autograd.grad(
+                        out,
+                        param,
+                        grad_outputs=grad_outputs,
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
                     if grad[0] is not None:
                         grad_reshaped = grad[0].unsqueeze(0)  # shape (1, *param_shape)
                     else:
-                        grad_reshaped = torch.zeros(1, *param_shape, device=param.device)
+                        grad_reshaped = torch.zeros(
+                            1, *param_shape, device=param.device
+                        )
                     grads.append(grad_reshaped)
-            Js[name] = torch.cat(grads, dim=0).view(batch_size, output_dim, *param_shape)
+            Js[name] = torch.cat(grads, dim=0).view(
+                batch_size, output_dim, *param_shape
+            )
         f = out
 
         # Concatenate over flattened parameters
@@ -432,7 +439,13 @@ class GGNInterface(CurvatureInterface):
         self.num_samples: int = num_samples
 
         super().__init__(
-            model, likelihood, last_layer, subnetwork_indices, dict_key_x, dict_key_y, scale_info=scale_info
+            model,
+            likelihood,
+            last_layer,
+            subnetwork_indices,
+            dict_key_x,
+            dict_key_y,
+            scale_info=scale_info,
         )
 
     def _get_mc_functional_fisher(self, f: torch.Tensor) -> torch.Tensor:

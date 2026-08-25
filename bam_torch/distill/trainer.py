@@ -9,6 +9,7 @@ Per-atom energy normalization (``pred_e/n_atoms`` vs ``target_e/n_atoms``) is
 applied for ``huber`` and ``mse`` losses to keep the loss scale comparable
 across cells of very different size — this matches ``MPTrainer`` behaviour.
 """
+
 from __future__ import annotations
 
 import torch
@@ -61,13 +62,24 @@ class DistillTrainer(BaseTrainer):
         )
 
         if self.rank == 0:
-            print(f"[distill] train batches: {len(train_loader)}  valid batches: {len(valid_loader)}")
-            print(f"[distill] using teacher's enr_avg_per_element ({len(self._teacher_enr_avg)} species)")
-        return train_loader, valid_loader, self._teacher_uniq_element, self._teacher_enr_avg
+            print(
+                f"[distill] train batches: {len(train_loader)}  valid batches: {len(valid_loader)}"
+            )
+            print(
+                f"[distill] using teacher's enr_avg_per_element ({len(self._teacher_enr_avg)} species)"
+            )
+        return (
+            train_loader,
+            valid_loader,
+            self._teacher_uniq_element,
+            self._teacher_enr_avg,
+        )
 
     def configure_loss(self, reduction="mean"):
         nn_config = self.json_data["NN"]
-        loss_config = nn_config.get("loss_config", {"energy_loss": "mse", "force_loss": "mse"})
+        loss_config = nn_config.get(
+            "loss_config", {"energy_loss": "mse", "force_loss": "mse"}
+        )
         huber_delta = loss_config.get("huber_delta", 0.1)
 
         loss_fn: dict = {}
@@ -81,7 +93,9 @@ class DistillTrainer(BaseTrainer):
                 loss_fn[key] = RMSELoss(reduction=reduction)
             elif name in ("huber", "h"):
                 # SmoothL1 with beta=delta is equivalent to Huber with delta.
-                loss_fn[key] = torch.nn.SmoothL1Loss(reduction=reduction, beta=huber_delta)
+                loss_fn[key] = torch.nn.SmoothL1Loss(
+                    reduction=reduction, beta=huber_delta
+                )
             else:
                 raise ValueError(f"unknown loss '{name}' for {key}")
         return loss_fn, loss_config
@@ -101,10 +115,12 @@ class DistillTrainer(BaseTrainer):
         # ---- DFT (hard) loss ---------------------------------------------------
         e_pred = preds["energy"].flatten()
         e_dft = data["energy"].flatten()
-        loss_e_dft = self.loss_fn["energy_loss"](e_pred / n_atoms_per_graph,
-                                                 e_dft / n_atoms_per_graph)
-        loss_f_dft = self.loss_fn["force_loss"](preds["forces"].flatten(),
-                                                data["forces"].flatten())
+        loss_e_dft = self.loss_fn["energy_loss"](
+            e_pred / n_atoms_per_graph, e_dft / n_atoms_per_graph
+        )
+        loss_f_dft = self.loss_fn["force_loss"](
+            preds["forces"].flatten(), data["forces"].flatten()
+        )
         l_dft = e_lambda * loss_e_dft + f_lambda * loss_f_dft
 
         # ---- Teacher (soft) loss ----------------------------------------------
@@ -119,10 +135,12 @@ class DistillTrainer(BaseTrainer):
         teacher_e = teacher_e_raw + teacher_shift
         teacher_f = data["teacher_forces"]
 
-        loss_e_t = self.loss_fn["energy_loss"](e_pred / n_atoms_per_graph,
-                                               teacher_e / n_atoms_per_graph)
-        loss_f_t = self.loss_fn["force_loss"](preds["forces"].flatten(),
-                                              teacher_f.flatten())
+        loss_e_t = self.loss_fn["energy_loss"](
+            e_pred / n_atoms_per_graph, teacher_e / n_atoms_per_graph
+        )
+        loss_f_t = self.loss_fn["force_loss"](
+            preds["forces"].flatten(), teacher_f.flatten()
+        )
         l_teacher = e_lambda * loss_e_t + f_lambda * loss_f_t
 
         # ---- Combined ---------------------------------------------------------

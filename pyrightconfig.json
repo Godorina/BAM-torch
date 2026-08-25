@@ -1,4 +1,6 @@
 {
+  // Retained for Pylance/editor compatibility; ty configuration in
+  // pyproject.toml is authoritative for automated type checking.
   "include": ["bam_torch"],
   "reportPrivateImportUsage": "none",
   "reportCallIssue": "none",

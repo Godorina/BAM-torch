@@ -1,10 +1,15 @@
-from copy import deepcopy
 import torch
 
 
-def model_forward(batch, model, frame_averaging, 
-                mode="train", crystal_task=True, 
-                edge_mask=None, permute=None):
+def model_forward(
+    batch,
+    model,
+    frame_averaging,
+    mode="train",
+    crystal_task=True,
+    edge_mask=None,
+    permute=None,
+):
     """Perform a model forward pass when frame averaging is applied.
 
     Args:
@@ -48,14 +53,15 @@ def model_forward(batch, model, frame_averaging,
                 preds = model(batch, mode=mode)
             except:
                 preds = model(batch)
-            #preds = model(deepcopy(batch), mode=mode)
+            # preds = model(deepcopy(batch), mode=mode)
             e_all.append(preds["energy"])
             fa_rot = None
-            
 
             # Force predictions are rotated back to be equivariant
             if preds.get("forces") is not None:
-                fa_rot = torch.repeat_interleave(batch.fa_rot[i], batch.num_nodes, dim=0)
+                fa_rot = torch.repeat_interleave(
+                    batch.fa_rot[i], batch.num_nodes, dim=0
+                )
                 # Transform forces to guarantee equivariance of FA method
                 g_forces = (
                     preds["forces"]
@@ -101,9 +107,15 @@ def model_forward(batch, model, frame_averaging,
     return preds
 
 
-def pa_model_forward(batch, model, frame_averaging, 
-                    mode="train", crystal_task=True, 
-                    edge_mask=None, permute=True):
+def pa_model_forward(
+    batch,
+    model,
+    frame_averaging,
+    mode="train",
+    crystal_task=True,
+    edge_mask=None,
+    permute=True,
+):
     """Perform a model forward pass when frame averaging is applied.
 
     Args:
@@ -125,7 +137,7 @@ def pa_model_forward(batch, model, frame_averaging,
     """
     K, B, _, _ = batch.fa_rot[1].shape
     K, B_N, _ = batch.fa_pos.shape
-    N = int(B_N/B)
+    N = int(B_N / B)
 
     if isinstance(batch, list):
         batch = batch[0]
@@ -144,15 +156,15 @@ def pa_model_forward(batch, model, frame_averaging,
         # Compute model prediction for each frame
         for i in range(len(batch.fa_pos)):
             batch.pos = batch.fa_pos[i]
-            #print(f"fa_pos: {batch.fa_pos}")
-            #print(f"batch.pos: {batch.pos}")
+            # print(f"fa_pos: {batch.fa_pos}")
+            # print(f"batch.pos: {batch.pos}")
             batch.edge_index = batch.fa_edge_index[i]
             batch.species = batch.fa_species[i]
 
             if crystal_task:
                 batch.cell = batch.fa_cell[i]
             # Forward pass
-            #preds = model(deepcopy(batch), mode=mode)
+            # preds = model(deepcopy(batch), mode=mode)
             try:
                 preds = model(batch, mode=mode)
             except:
@@ -179,8 +191,12 @@ def pa_model_forward(batch, model, frame_averaging,
                 ks = batch.fa_rot[1][i]
 
                 g_grad_target = preds["forces_grad_target"].view(B, N, 3)
-                g_grad_target = torch.bmm(g_grad_target, ks.to(preds["forces_grad_target"].device))
-                g_grad_target = torch.bmm(hs.to(preds["forces_grad_target"].device), g_grad_target)
+                g_grad_target = torch.bmm(
+                    g_grad_target, ks.to(preds["forces_grad_target"].device)
+                )
+                g_grad_target = torch.bmm(
+                    hs.to(preds["forces_grad_target"].device), g_grad_target
+                )
                 gt_all.append(g_grad_target.view(-1, 3))
 
         batch.pos = original_pos
@@ -206,9 +222,15 @@ def pa_model_forward(batch, model, frame_averaging,
     return preds
 
 
-def base_foward(batch, model, frame_averaging="no", 
-                mode="train", crystal_task=True, 
-                edge_mask=None, permute=True):
+def base_foward(
+    batch,
+    model,
+    frame_averaging="no",
+    mode="train",
+    crystal_task=True,
+    edge_mask=None,
+    permute=True,
+):
     batch.pos = batch.positions
     preds = model(batch)
     return preds

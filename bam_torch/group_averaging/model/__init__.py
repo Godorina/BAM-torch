@@ -1,7 +1,7 @@
-from .gnn_model import FAENet
-from .transformer import Transformer
 import torch
 
+from .gnn_model import FAENet
+from .transformer import Transformer
 
 MODEL_REGISTRY = {
     "faenet": FAENet,
@@ -14,5 +14,5 @@ ACTIVE_FN_REGISTRY = {
     "swish": torch.nn.SiLU(),
     "relu": torch.nn.ReLU(),
     "identity": torch.nn.Identity(),
-    "gelu": torch.nn.functional.gelu
+    "gelu": torch.nn.functional.gelu,
 }

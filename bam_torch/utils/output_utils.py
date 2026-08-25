@@ -4,18 +4,19 @@
 # This program is distributed under the MIT License (see MIT.md)
 ###########################################################################################
 
-from typing import List, Optional, Tuple, Dict
-from torch.jit import annotate
+
 import torch
 import torch.nn
 import torch.utils.data
-from bam_torch.utils.scatter import scatter_sum, scatter_mean
+from torch.jit import annotate
+
+from bam_torch.utils.scatter import scatter_mean, scatter_sum
 
 
 def compute_forces(
     energy: torch.Tensor, positions: torch.Tensor, training: bool = True
 ) -> torch.Tensor:
-    grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(energy)]
+    grad_outputs: list[torch.Tensor | None] = [torch.ones_like(energy)]
     gradient = torch.autograd.grad(
         outputs=[energy],  # [n_graphs, ]
         inputs=[positions],  # [n_nodes, 3]
@@ -36,8 +37,8 @@ def compute_forces_virials(
     cell: torch.Tensor,
     training: bool = True,
     compute_stress: bool = False,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-    grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(energy)]
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    grad_outputs: list[torch.Tensor | None] = [torch.ones_like(energy)]
     forces, virials = torch.autograd.grad(
         outputs=[energy],  # [n_graphs, ]
         inputs=[positions, displacement],  # [n_nodes, 3]
@@ -59,6 +60,7 @@ def compute_forces_virials(
 
     return -1 * forces, -1 * virials, stress
 
+
 def compute_forces_stress(
     energy: torch.Tensor,
     positions: torch.Tensor,
@@ -67,11 +69,15 @@ def compute_forces_stress(
     num_graphs: int,
     training: bool = False,
     compute_stress: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    grad_outputs = annotate(List[Optional[torch.Tensor]], [torch.ones_like(energy)])
-    virials = torch.zeros((num_graphs, 3, 3), dtype=positions.dtype, device=positions.device)
-    stress = torch.zeros((num_graphs, 6), dtype=positions.dtype, device=positions.device)
+    grad_outputs = annotate(list[torch.Tensor | None], [torch.ones_like(energy)])
+    virials = torch.zeros(
+        (num_graphs, 3, 3), dtype=positions.dtype, device=positions.device
+    )
+    stress = torch.zeros(
+        (num_graphs, 6), dtype=positions.dtype, device=positions.device
+    )
 
     grad, cellgrad = torch.autograd.grad(
         outputs=[energy],  # [n_graphs, ]
@@ -87,22 +93,20 @@ def compute_forces_stress(
         if cellgrad.dim() == 2:  # [3, 3]
             cellgrad = cellgrad.unsqueeze(0)  # [1, 3, 3]
         volume = torch.linalg.det(cell).abs().unsqueeze(-1)
-        stress_cell = (
-            torch.transpose(cellgrad, 1, 2) @ cell
-        )
+        stress_cell = torch.transpose(cellgrad, 1, 2) @ cell
         assert grad is not None
         assert positions is not None
         stress_grad = torch.einsum("iu,iv->iuv", grad, positions)
         stress_grad = scatter_sum(
-                src=stress_grad,
-                index=batch_idx,
-                dim=0,
-                dim_size=num_graphs,
-            ) 
+            src=stress_grad,
+            index=batch_idx,
+            dim=0,
+            dim_size=num_graphs,
+        )
 
         virials = stress_cell + stress_grad
         stress = virials / volume.view(-1, 1, 1)
-        stress = stress.view(-1, 9)[:, [0,4,8,5,2,1]]
+        stress = stress.view(-1, 9)[:, [0, 4, 8, 5, 2, 1]]
 
     if grad is None:
         forces = torch.zeros_like(positions)
@@ -114,27 +118,27 @@ def compute_forces_stress(
 
 
 def get_symmetric_displacement(
-    data: Dict[str, torch.Tensor],
+    data: dict[str, torch.Tensor],
 ) -> torch.Tensor:
     num_graphs = data["ptr"].numel() - 1
     positions = data["positions"]
-    
-    displacement = torch.zeros((num_graphs, 3, 3), 
-                              dtype=positions.dtype, 
-                              device=positions.device)
+
+    displacement = torch.zeros(
+        (num_graphs, 3, 3), dtype=positions.dtype, device=positions.device
+    )
     displacement.requires_grad_(True)
-    
+
     symmetric_displacement = 0.5 * (displacement + displacement.transpose(-1, -2))
-    data["positions"] = positions + torch.einsum("be,bec->bc", 
-                                               positions, 
-                                               symmetric_displacement[data["batch"]])
-    
+    data["positions"] = positions + torch.einsum(
+        "be,bec->bc", positions, symmetric_displacement[data["batch"]]
+    )
+
     if "cell" in data:
         cell = data["cell"]
         if cell.dim() == 3:  # [1,3,3]
             cell = cell.squeeze(0)
         data["cell"] = cell + torch.matmul(cell, symmetric_displacement[0])
-    
+
     return displacement
 
 
@@ -196,7 +200,7 @@ def compute_hessians_loop(
 def get_outputs(
     energy: torch.Tensor,
     positions: torch.Tensor,
-    displacement: Optional[torch.Tensor],
+    displacement: torch.Tensor | None,
     cell: torch.Tensor,
     batch_idx: torch.Tensor,
     num_graphs: int,
@@ -205,11 +209,11 @@ def get_outputs(
     compute_virials: bool = True,
     compute_stress: bool = True,
     compute_hessian: bool = False,
-) -> Tuple[
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
+) -> tuple[
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
 ]:
     if (compute_virials or compute_stress) and displacement is None:
         forces, virials, stress = compute_forces_stress(
@@ -256,7 +260,7 @@ def _compute_net_torque(
     positions: torch.Tensor,
     forces: torch.Tensor,
     n_nodes: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute the net torque on a system of particles."""
     com = scatter_mean(positions, n_nodes, dim=0)
     com_repeat = com[n_nodes]  # Shape: (N, 3)
@@ -264,6 +268,7 @@ def _compute_net_torque(
     torques = torch.linalg.cross(com_relative_positions, forces)  # Shape: (N, 3)
     net_torque = scatter_sum(torques, n_nodes, dim=0)
     return net_torque, com_relative_positions
+
 
 def remove_net_torque(
     positions: torch.Tensor,
@@ -333,14 +338,16 @@ def remove_net_torque(
     # Non-singular case (use solve)
     mask_ok = det.abs() > eps
     if mask_ok.any():
-        mu[mask_ok] = torch.linalg.solve(M[mask_ok], b[mask_ok].unsqueeze(-1)).squeeze(-1)
+        mu[mask_ok] = torch.linalg.solve(M[mask_ok], b[mask_ok].unsqueeze(-1)).squeeze(
+            -1
+        )
 
     # Singular case fallback (use pseudo-inverse)
     mask_bad = ~mask_ok
     if mask_bad.any():
         M_pinv = torch.linalg.pinv(M[mask_bad])
         mu[mask_bad] = torch.bmm(M_pinv, b[mask_bad].unsqueeze(-1)).squeeze(-1)
-        
+
     # Compute adjustments to forces
     mu_batch = mu[n_nodes]  # Shape: (N, 3)
     forces_delta = torch.linalg.cross(r, mu_batch)  # Shape: (N, 3)

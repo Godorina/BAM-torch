@@ -1,5 +1,4 @@
-from .ga_forward import model_forward, pa_model_forward, base_foward
-
+from .ga_forward import base_foward, model_forward, pa_model_forward
 
 FORWARD_REGISTRY = {
     "prob": pa_model_forward,

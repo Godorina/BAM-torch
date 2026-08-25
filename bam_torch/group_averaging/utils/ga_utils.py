@@ -3,10 +3,9 @@ import numbers
 import random
 
 import torch
-import torch.nn as nn
 import torch_geometric
-from torch_geometric.transforms import LinearTransformation
 from torch_geometric.nn import radius_graph
+from torch_geometric.transforms import LinearTransformation
 
 
 def batched_gram_schmidt_3d(bvv):
@@ -52,7 +51,8 @@ def swish(x):
 
 def _check_index_bounds(name, size0, idx):
     assert idx.dtype == torch.long, f"{name}: must be long, got {idx.dtype}"
-    mn = int(idx.min().item()); mx = int(idx.max().item())
+    mn = int(idx.min().item())
+    mx = int(idx.max().item())
     ok = (mn >= 0) and (mx < size0)
     print(f"[{name}] size0={size0}, min={mn}, max={mx}, ok={ok}")
     return ok
@@ -81,26 +81,26 @@ def get_pbc_distances(
         (dict): dictionary with the updated edge_index, atom distances,
             and optionally the offsets and distance vectors.
     """
-    rel_pos = pos[edge_index[0]] - pos[edge_index[1]] # R[jatoms] - R[iatoms]
+    rel_pos = pos[edge_index[0]] - pos[edge_index[1]]  # R[jatoms] - R[iatoms]
 
     # correct for pbc
-    #neighbors = neighbors.to(cell.device)
+    # neighbors = neighbors.to(cell.device)
     b, _, _ = cell.shape
     cell_offsets = cell_offsets.view(b, -1, 3)
     b, e_size, _ = cell_offsets.shape
     expanded_cell = torch.repeat_interleave(cell, repeats=e_size, dim=0)
     expanded_cell = expanded_cell.reshape(b, e_size, 3, 3)
-    offsets = torch.einsum('bni,bnij->bnj', cell_offsets, expanded_cell).view(-1, 3)
-    #print(rel_pos.shape)
-    #print(offsets.shape)
+    offsets = torch.einsum("bni,bnij->bnj", cell_offsets, expanded_cell).view(-1, 3)
+    # print(rel_pos.shape)
+    # print(offsets.shape)
     rel_pos = rel_pos + offsets
 
     # compute distances
-    distances = rel_pos.norm(dim=-1) #.clamp(min=1e-8)
+    distances = rel_pos.norm(dim=-1)  # .clamp(min=1e-8)
 
     # redundancy: remove zero distances
     nonzero_idx = torch.arange(len(distances), device=distances.device)[distances != 0]
-    #nonzero_idx = torch.arange(len(distances), device=distances.device)
+    # nonzero_idx = torch.arange(len(distances), device=distances.device)
     edge_index = edge_index[:, nonzero_idx]
     distances = distances[nonzero_idx]
 
@@ -108,7 +108,7 @@ def get_pbc_distances(
         "edge_index": edge_index,
         "distances": distances,
     }
-    
+
     if return_rel_pos:
         out["rel_pos"] = rel_pos[nonzero_idx]
 
@@ -172,7 +172,7 @@ def pbc_preprocess(data, cutoff=6.0, max_num_neighbors=40):
     Returns:
         (tuple): atomic_numbers, batch, sparse adjacency matrix, relative positions, distances
     """
-    #data.edge_index[[0, 1]] = data.edge_index[[1, 0]]
+    # data.edge_index[[0, 1]] = data.edge_index[[1, 0]]
     edge_index = data.edge_index
     edge_index = torch.stack([edge_index[1], edge_index[0]], dim=0)
     data.edge_index = edge_index
@@ -180,17 +180,17 @@ def pbc_preprocess(data, cutoff=6.0, max_num_neighbors=40):
         edge_index = data.pa_edge_index
     else:
         edge_index = data.edge_index
-    #print(data.pos)
+    # print(data.pos)
     out = get_pbc_distances(
         data.pos,
         edge_index,
         data.cell,
-        data.edges, # cell_offsets
+        data.edges,  # cell_offsets
         return_rel_pos=True,
     )
 
     return (
-        data.species.long(), # atomic_numbers
+        data.species.long(),  # atomic_numbers
         data.batch,
         out["edge_index"],
         out["rel_pos"],
@@ -198,7 +198,7 @@ def pbc_preprocess(data, cutoff=6.0, max_num_neighbors=40):
     )
 
 
-class RandomRotate(object):
+class RandomRotate:
     r"""Rotates node positions around a specific axis by a randomly sampled
     factor within a given interval.
 
@@ -261,12 +261,10 @@ class RandomRotate(object):
         )
 
     def __repr__(self):
-        return "{}({}, axis={})".format(
-            self.__class__.__name__, self.degrees, self.axis
-        )
+        return f"{self.__class__.__name__}({self.degrees}, axis={self.axis})"
 
 
-class RandomReflect(object):
+class RandomReflect:
     r"""Reflect node positions around a specific axis (x, y, x=y) or the origin.
     Take a random reflection type from a list of reflection types.
         (type 0: reflect wrt x-axis, type1: wrt y-axis, type2: y=x, type3: origin)

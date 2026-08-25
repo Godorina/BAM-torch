@@ -1,0 +1,101 @@
+name: quality
+
+# Pull-request gate for the maintained quality baseline documented in
+# README.md ("Development and Code Quality"). It runs the same commands a
+# developer runs locally, nothing more: no group_averaging extra, no CUDA, no
+# native PyG extensions (torch_scatter/torch_cluster have no PyPI wheels), no
+# LAMMPS, and no examples/ scripts.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-24.04
+    steps:
+      # Pinned to the immutable commit SHA of tag v7.0.1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # rhysd/actionlint ships no reusable action, so the release binary is
+      # pinned by version *and* verified against the SHA-256 published in
+      # actionlint_1.7.12_checksums.txt. That is the same immutability
+      # guarantee a commit-SHA action pin gives.
+      - name: Install actionlint 1.7.12 (checksum verified)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict -
+          mkdir -p "${RUNNER_TEMP}/actionlint"
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}/actionlint" actionlint
+          rm -f "${archive}"
+
+      - name: Lint workflows
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/actionlint/actionlint" -color
+
+  test:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # The supported interpreters from pyproject.toml's classifiers;
+        # requires-python is ">=3.11".
+        python-version: ["3.11", "3.12"]
+    steps:
+      # Pinned to the immutable commit SHA of tag v7.0.1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # Pinned to the immutable commit SHA of tag v10.0.1. `version` pins the
+      # uv binary itself to the release that produced the committed uv.lock,
+      # so CI resolves exactly what local development resolves.
+      - name: Install uv 0.12.5
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: "0.12.5"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      # Fails if uv.lock is stale relative to pyproject.toml.
+      - name: Validate the lock
+        run: uv lock --check
+
+      # Core dependencies plus the `dev` group (pytest, ruff, ty) exactly as
+      # locked. No extras: cueq/oeq/laplace/economics/group_averaging stay out.
+      - name: Sync the core environment
+        run: uv sync
+
+      - name: Tests
+        run: uv run pytest -q
+
+      # Ruff's maintained scope is `bam_torch` and `install_deps.py` only --
+      # not `.`. examples/ holds user-editable scientific scripts and generated
+      # artifacts and is excluded from the baseline.
+      - name: Ruff format check
+        run: uv run ruff format --check bam_torch install_deps.py
+
+      - name: Ruff lint
+        run: uv run ruff check bam_torch install_deps.py
+
+      # This is the maintained command, and it is narrower than it looks:
+      # [tool.ty.src] sets include = ["bam_torch/economics"], so ty analyzes
+      # only bam_torch/economics regardless of the `bam_torch` argument. This
+      # step is an economics-only typing gate, not full-package type coverage.
+      - name: ty check (economics-scoped baseline)
+        run: uv run ty check bam_torch
+
+      - name: Economics CLI smoke check
+        run: uv run python -m bam_torch.economics.cli --help

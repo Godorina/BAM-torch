@@ -1,9 +1,11 @@
-from .utils import date
 from copy import deepcopy
+
+from .utils import date
+
 
 class Logger:
     def __init__(self, log_config, loss_config, log_length, fout):
-        """ Default of log_config
+        """Default of log_config
         log_config = {'step': ['date', 'epoch'],
                       'train': ['loss', 'loss_e', 'loss_f'],
                       'valid': ['loss', 'loss_e', 'loss_f'],
@@ -15,7 +17,7 @@ class Logger:
         self.loss_config = loss_config
         self.length = 5
         self.space = 11
-        if log_length == 'precise':
+        if log_length == "precise":
             self.length = 10
             self.space = 16
         self.logger_config, self.separator = self.configure_logger()
@@ -26,11 +28,11 @@ class Logger:
             log_config = deepcopy(self.log_config)
             for key, values in self.log_config.items():
                 for i, value in enumerate(values):
-                    if value == 'loss_e':
+                    if value == "loss_e":
                         log_config[key][i] = f"{self.loss_config['energy_loss']}_e"
-                    elif value == 'loss_f':
+                    elif value == "loss_f":
                         log_config[key][i] = f"{self.loss_config['force_loss']}_f"
-                    elif value == 'loss_s':
+                    elif value == "loss_s":
                         log_config[key][i] = f"{self.loss_config['stress_loss']}_s"
         divider = " | "
         logger = {}
@@ -43,27 +45,27 @@ class Logger:
                 key_values = list(log_config.values())[k]
                 del key_values[0]
                 for v in range(len(key_values)):
-                    line += f"{key_values[v].upper():{len(key_values[v])+2}}"
-                    space += [len(key_values[v])+2]
+                    line += f"{key_values[v].upper():{len(key_values[v]) + 2}}"
+                    space += [len(key_values[v]) + 2]
                 line += divider
-                logger[f'{key}'] = [line, space]
+                logger[f"{key}"] = [line, space]
             else:
                 key = keys[k].upper()
                 line = ""
                 space = []
                 key_values = list(log_config.values())[k]
-                if k < 3: #len(log_config)-1:
+                if k < 3:  # len(log_config)-1:
                     spc = self.space
                 else:
-                    spc = self.space-6
+                    spc = self.space - 6
                 for v in range(len(key_values)):
                     line += f"{key_values[v].upper():{spc}}"
                     space += [spc]
-                if k < 3: #len(log_config)-1:
+                if k < 3:  # len(log_config)-1:
                     line += divider
-                logger[f'{key}'] = [line, space]
-        separator = '-' * sum(len(v[0]) for v in logger.values())
-                
+                logger[f"{key}"] = [line, space]
+        separator = "-" * sum(len(v[0]) for v in logger.values())
+
         return logger, separator
 
     def print_logger_head(self):
@@ -77,14 +79,14 @@ class Logger:
             if k == 0:
                 key_values = values[k]
                 line = key_values[0]
-                separator = ' ' * (len(line)-len(divider))
+                separator = " " * (len(line) - len(divider))
                 head += separator
                 LINE += line
-            elif k < last: #len(self.logger_config)-1:
+            elif k < last:  # len(self.logger_config)-1:
                 key_values = values[k]
                 key = keys[k]
                 line = key_values[0]
-                separator = '_' * (len(line)-len(divider)-len(key))
+                separator = "_" * (len(line) - len(divider) - len(key))
                 head = head + divider + key + separator
                 LINE += line
             else:
@@ -93,7 +95,7 @@ class Logger:
                 line = key_values[0]
                 head += divider
                 LINE += line
-        #separator = '-' * len(LINE)
+        # separator = '-' * len(LINE)
         print(head, file=self.fout)
         print(LINE, file=self.fout)
         print(self.separator, file=self.fout)
@@ -102,18 +104,18 @@ class Logger:
         print(head)
         print(LINE)
         print(self.separator)
-        #self.separator = separator
-    
+        # self.separator = separator
+
     def get_seperator(self):
         return self.separator
-    
+
     def print_epoch_loss(self, step_dict, epoch_loss_train, epoch_loss_valid, lr=None):
 
         keys = list(self.log_config.keys())
-        #assert len(step_dict) == len(self.log_config[keys[0]])         # step
-        #assert len(epoch_loss_train) == len(self.log_config[keys[1]])  # train or predict
-        #assert len(epoch_loss_valid) == len(self.log_config[keys[2]])  # valid or exact
-        
+        # assert len(step_dict) == len(self.log_config[keys[0]])         # step
+        # assert len(epoch_loss_train) == len(self.log_config[keys[1]])  # train or predict
+        # assert len(epoch_loss_valid) == len(self.log_config[keys[2]])  # valid or exact
+
         values = list(self.log_config.values())
         _intervals = list(self.logger_config.values())
         intervals = [item[1] for item in _intervals]
@@ -127,20 +129,23 @@ class Logger:
 
         key = values[1]
         for k in range(len(key)):
-            LINE += f"{float(epoch_loss_train[key[k]]):<{intervals[1][k]}.{self.length}g}"
+            LINE += (
+                f"{float(epoch_loss_train[key[k]]):<{intervals[1][k]}.{self.length}g}"
+            )
         LINE += divider
 
         key = values[2]
         for k in range(len(key)):
-            LINE += f"{float(epoch_loss_valid[key[k]]):<{intervals[2][k]}.{self.length}g}"
-        
+            LINE += (
+                f"{float(epoch_loss_valid[key[k]]):<{intervals[2][k]}.{self.length}g}"
+            )
+
         if lr != None:
             LINE += divider
-            if self.log_config[keys[3]][0].lower() == 'lr':
+            if self.log_config[keys[3]][0].lower() == "lr":
                 LINE += f"{lr:<{intervals[3][0]}.4g}"
             else:
                 LINE += f"{lr:<{intervals[3][0]}.{self.length}g}"
         print(LINE, file=self.fout)
         self.fout.flush()
         print(LINE)
-

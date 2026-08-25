@@ -1,13 +1,11 @@
+import pandas as pd
 import torch
+from mendeleev.fetch import fetch_ionization_energies, fetch_table
 from torch import nn
 from torch.nn import Embedding, Linear
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn.norm import GraphNorm
 from torch_scatter import scatter
-
-import pandas as pd
-from typing import Dict, Optional, Union
-from mendeleev.fetch import fetch_ionization_energies, fetch_table
 
 
 class EmbeddingBlock(nn.Module):
@@ -96,7 +94,7 @@ class EmbeddingBlock(nn.Module):
             self.period_embedding.reset_parameters()
             self.group_embedding.reset_parameters()
         nn.init.xavier_uniform_(self.lin.weight)
-        #self.lin_h.bias.data.fill_(0)
+        # self.lin_h.bias.data.fill_(0)
         self.lin.bias.data.fill_(0)
         nn.init.xavier_uniform_(self.lin_e1.weight)
         self.lin_e1.bias.data.fill_(0)
@@ -134,18 +132,18 @@ class EmbeddingBlock(nn.Module):
         # --- Node embedding --
 
         # Create atom embeddings based on its characteristic number
-        #from bam_torch.model.models import to_one_hot
-        #node_attrs = to_one_hot(z.unsqueeze(-1), 4)
-        #print(node_attrs)
-        #print(self.lin_h)
-        #h = self.lin_h(node_attrs)
+        # from bam_torch.model.models import to_one_hot
+        # node_attrs = to_one_hot(z.unsqueeze(-1), 4)
+        # print(node_attrs)
+        # print(self.lin_h)
+        # h = self.lin_h(node_attrs)
         h = self.emb(z)
-        
-        #torch.set_printoptions(threshold=float('inf'))
-        #print('emb:', self.emb)
-        #print('h:', h)
-        #print(h.shape)
-        #print(d)
+
+        # torch.set_printoptions(threshold=float('inf'))
+        # print('emb:', self.emb)
+        # print('h:', h)
+        # print(h.shape)
+        # print(d)
 
         if self.phys_emb.device != h.device:
             self.phys_emb = self.phys_emb.to(h.device)
@@ -182,7 +180,7 @@ class GaussianSmearing(nn.Module):
     def __init__(self, start=0.0, stop=5.0, num_gaussians=50, eps=1e-6):
         super().__init__()
         offset = torch.linspace(start, stop, num_gaussians)
-        self.coeff = -0.5 / (offset[1] - offset[0]).item() ** 2 #+ eps)
+        self.coeff = -0.5 / (offset[1] - offset[0]).item() ** 2  # + eps)
         self.register_buffer("offset", offset)
 
     def forward(self, dist):
@@ -325,7 +323,7 @@ class InteractionBlock(MessagePassing):
         complex_mp,
         graph_norm,
     ):
-        super(InteractionBlock, self).__init__()
+        super().__init__()
         self.act = act
         self.mp_type = mp_type
         self.hidden_channels = hidden_channels
@@ -442,10 +440,10 @@ class InteractionBlock(MessagePassing):
         if local_env is not None:
             return W
         elif edge_mask is not None:
-            return x_j * W * edge_mask.view(-1, 1)          
+            return x_j * W * edge_mask.view(-1, 1)
         else:
             return x_j * W
-        
+
 
 class OutputBlock(nn.Module):
     """Compute task-specific predictions from final atom representations."""
@@ -504,9 +502,10 @@ class OutputBlock(nn.Module):
 
         return out, node_energy
 
+
 class LambdaLayer(nn.Module):
     def __init__(self, func):
-        super(LambdaLayer, self).__init__()
+        super().__init__()
         self.func = func
 
     def forward(self, x):

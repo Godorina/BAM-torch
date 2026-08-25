@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # Metal constants: atomic mass, point GWP, 2.5% GWP, 97.5% GWP, d-block.
 # GWP source: Nuss & Eckelman (2014), PLoS ONE 9(7): e101298, Table S38
@@ -74,15 +78,15 @@ ACTIVE26 = {
 
 @dataclass(frozen=True)
 class CatalystCostResult:
-    candidates: object
-    per_metal: object
+    candidates: pd.DataFrame
+    per_metal: pd.DataFrame
     pt_c_5wt_embodied_co2: float
     pt_c_5wt_cost_central_usd_per_kg: float
 
 
 def _require_pandas():
     try:
-        import pandas as pd  # type: ignore
+        import pandas as pd
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise ImportError(
             "Catalyst economics tables require pandas. Install BAM-torch with "
@@ -122,7 +126,9 @@ def catalyst_carbon_cost(
     required = {"metal", "N_number", "coordination"}
     missing_columns = required - set(ef.columns)
     if missing_columns:
-        raise ValueError(f"Catalyst CSV missing required columns: {sorted(missing_columns)}")
+        raise ValueError(
+            f"Catalyst CSV missing required columns: {sorted(missing_columns)}"
+        )
 
     rng = np.random.RandomState(random_seed)
     gwp_draw: dict[str, np.ndarray] = {}
@@ -187,17 +193,21 @@ def catalyst_carbon_cost(
     return result
 
 
-def write_catalyst_cost_outputs(result: CatalystCostResult, out_dir: str | Path) -> None:
+def write_catalyst_cost_outputs(
+    result: CatalystCostResult, out_dir: str | Path
+) -> None:
     pd = _require_pandas()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     with pd.ExcelWriter(out / "carbon_social_cost.xlsx", engine="openpyxl") as xw:
         result.per_metal.to_excel(xw, sheet_name="per_metal", index=False)
-        result.candidates[result.candidates.is_active26].sort_values("cost_central_$141").to_excel(
-            xw, sheet_name="26_candidates", index=False
+        result.candidates[result.candidates.is_active26].sort_values(
+            "cost_central_$141"
+        ).to_excel(xw, sheet_name="26_candidates", index=False)
+        result.candidates.sort_values("cost_central_$141").to_excel(
+            xw, sheet_name="all_candidates", index=False
         )
-        result.candidates.sort_values("cost_central_$141").to_excel(xw, sheet_name="all_candidates", index=False)
 
     result.per_metal[
         [
@@ -232,7 +242,9 @@ def summarize_catalyst_cost(result: CatalystCostResult) -> dict[str, object]:
         "pt_c_5wt_cost_central_usd_per_kg": result.pt_c_5wt_cost_central_usd_per_kg,
         "active26_cost_central_usd_per_kg": {
             "min": float(active["cost_central_$141"].min()) if len(active) else None,
-            "median": float(active["cost_central_$141"].median()) if len(active) else None,
+            "median": float(active["cost_central_$141"].median())
+            if len(active)
+            else None,
             "max": float(active["cost_central_$141"].max()) if len(active) else None,
         },
     }

@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .catalyst_cost import CatalystCostResult, catalyst_carbon_cost, summarize_catalyst_cost
+from .catalyst_cost import (
+    CatalystCostResult,
+    catalyst_carbon_cost,
+    summarize_catalyst_cost,
+)
 from .scc_rf import build_scc_distribution, load_scc_draws, save_scc_draws
 
 
@@ -32,7 +36,9 @@ def run_catalyst_economics(
         if verbose:
             print(f"[1] SCC draws loaded: {len(scc_draws):,} from {scc_draws_path}")
     else:
-        scc_draws = build_scc_distribution(scc_csv, out_dir=out_dir, n_draws=n_draws, verbose=verbose)
+        scc_draws = build_scc_distribution(
+            scc_csv, out_dir=out_dir, n_draws=n_draws, verbose=verbose
+        )
         if save_scc_draws_path is not None:
             save_scc_draws(save_scc_draws_path, scc_draws)
             if verbose:
@@ -50,7 +56,9 @@ def run_catalyst_economics(
         "out_dir": str(out_dir),
         "scc_draws": {
             "n": int(len(scc_draws)),
-            "source": str(scc_draws_path) if scc_draws_path is not None else "rf_synthetic_scenario_D",
+            "source": str(scc_draws_path)
+            if scc_draws_path is not None
+            else "rf_synthetic_scenario_D",
         },
         "catalyst_economics": economics_summary,
         "outputs": {
@@ -59,7 +67,9 @@ def run_catalyst_economics(
             "summary_json": str(out_dir / "catalyst_economics_summary.json"),
         },
     }
-    write_catalyst_economics_summary(summary, out_dir / "catalyst_economics_summary.json")
+    write_catalyst_economics_summary(
+        summary, out_dir / "catalyst_economics_summary.json"
+    )
 
     if verbose:
         print(
@@ -100,10 +110,14 @@ def merge_model_and_economics_report(
 
     report = {
         "model_metrics": model_metrics,
-        "catalyst_economics": economics_summary.get("catalyst_economics", economics_summary),
+        "catalyst_economics": economics_summary.get(
+            "catalyst_economics", economics_summary
+        ),
         "economics_outputs": economics_summary.get("outputs", {}),
     }
     output_json = Path(output_json)
     output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    output_json.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     return report

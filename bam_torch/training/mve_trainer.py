@@ -1,74 +1,77 @@
 import torch
-from bam_torch.utils.utils import date
+
 from .base_trainer import BaseTrainer
-from .loss import RMSELoss, l2_regularization, NLLLoss
+from .loss import NLLLoss, RMSELoss, l2_regularization
 
 
 class MVETrainer(BaseTrainer):
-    """Trainer for mean-variance estimation (MVE) model
-    """
+    """Trainer for mean-variance estimation (MVE) model"""
+
     def __init__(self, json_data, rank, world_size):
         super().__init__(json_data, rank, world_size)
 
-    def configure_loss(self, reduction='mean'):
+    def configure_loss(self, reduction="mean"):
         nn_config = self.json_data.get("NN")
         loss_config = nn_config.get("loss_config")
         if loss_config == None:
             if self.json_data["regress_forces"]:
                 loss_config = {
-                    'energy_loss': 'nll',
-                    'force_loss': 'nll',
-                    'stress_loss': 'mse'
+                    "energy_loss": "nll",
+                    "force_loss": "nll",
+                    "stress_loss": "mse",
                 }
             else:
-                loss_config = {'energy_loss': 'nll'}
+                loss_config = {"energy_loss": "nll"}
 
         loss_fn = {}
-        loss_fn['energy_loss'] = loss_config.get('energy_loss')
-        loss_fn['force_loss'] = loss_config.get('force_loss')
-        loss_fn['stress_loss'] = loss_config.get('stress_loss')
+        loss_fn["energy_loss"] = loss_config.get("energy_loss")
+        loss_fn["force_loss"] = loss_config.get("force_loss")
+        loss_fn["stress_loss"] = loss_config.get("stress_loss")
 
         for loss, loss_name in loss_fn.items():
-            if loss_name in ['l1', 'L1', 'mae', 'MAE']:
+            if loss_name in ["l1", "L1", "mae", "MAE"]:
                 loss_fn[loss] = torch.nn.L1Loss(reduction=reduction)
-            elif loss_name in ['mse', 'MSE']:
+            elif loss_name in ["mse", "MSE"]:
                 loss_fn[loss] = torch.nn.MSELoss(reduction=reduction)
-            elif loss_name in ['rmse', 'RMSE']:
+            elif loss_name in ["rmse", "RMSE"]:
                 loss_fn[loss] = RMSELoss(reduction=reduction)
-            elif loss_name in ['nll', 'NLL']:
+            elif loss_name in ["nll", "NLL"]:
                 loss_fn[loss] = NLLLoss()
 
         return loss_fn, loss_config
 
     def compute_loss(self, preds, data):
-        if 'nll' in self.loss_config.values() or 'NLL' in self.loss_config.values():
+        if "nll" in self.loss_config.values() or "NLL" in self.loss_config.values():
             lambda_config = self.json_data["NN"]
-            e_lambda = lambda_config.get('enr_lambda', 1)
-            f_lambda = lambda_config.get('frc_lambda', 1)
-            s_lambda = lambda_config.get('str_lambda', 1)
-            lambd = lambda_config.get('l2_lambda', 0)
+            e_lambda = lambda_config.get("enr_lambda", 1)
+            f_lambda = lambda_config.get("frc_lambda", 1)
+            s_lambda = lambda_config.get("str_lambda", 1)
+            lambd = lambda_config.get("l2_lambda", 0)
 
             loss = {"loss": []}
             loss_enr = self.loss_fn["energy_loss"](preds, data, tag="energy")
             loss["loss"].append(e_lambda * loss_enr["loss_e"])
-            loss['loss'].append(loss_enr['log_e'])
-            loss['loss_e'] = loss_enr['loss_e']
-            loss['log_e'] = loss_enr['log_e']
-            loss['enr_var'] = loss_enr['enr_var']
+            loss["loss"].append(loss_enr["log_e"])
+            loss["loss_e"] = loss_enr["loss_e"]
+            loss["log_e"] = loss_enr["log_e"]
+            loss["enr_var"] = loss_enr["enr_var"]
 
             if "forces" in preds and self.loss_fn.get("force_loss") is not None:
                 loss_frc = self.loss_fn["force_loss"](preds, data, tag="force")
                 loss["loss"].append(f_lambda * loss_frc["loss_f"])
-                loss['loss'].append(loss_frc['log_f'])
-                loss['loss_f'] = loss_frc['loss_f']
-                loss['log_f'] = loss_frc['log_f']
-                loss['frc_var'] = loss_frc['frc_var']
+                loss["loss"].append(loss_frc["log_f"])
+                loss["loss_f"] = loss_frc["loss_f"]
+                loss["log_f"] = loss_frc["log_f"]
+                loss["frc_var"] = loss_frc["frc_var"]
             if "stress" in preds and self.loss_fn.get("stress_loss") is not None:
-                loss['loss_s'] = self.loss_fn["stress_loss"](preds['stress'].flatten(),
-                                                             data['stress'].flatten())
+                loss["loss_s"] = self.loss_fn["stress_loss"](
+                    preds["stress"].flatten(), data["stress"].flatten()
+                )
                 loss["loss"].append(s_lambda * loss["loss_s"])
-            elif (hasattr(self.model, "training_mode_for_lammps") \
-                    and self.model.training_mode_for_lammps):
+            elif (
+                hasattr(self.model, "training_mode_for_lammps")
+                and self.model.training_mode_for_lammps
+            ):
                 loss["loss_s"] = torch.tensor(
                     0.0, device=preds["stress"].device, requires_grad=True
                 )
@@ -86,10 +89,10 @@ class MVETrainer(BaseTrainer):
 
     def _compute_loss(self, preds, data):
         lambda_config = self.json_data["NN"]
-        e_lambda = lambda_config.get('enr_lambda', 1)
-        f_lambda = lambda_config.get('frc_lambda', 1)
-        s_lambda = lambda_config.get('str_lambda', 1)
-        lambd = lambda_config.get('l2_lambda', 0)
+        e_lambda = lambda_config.get("enr_lambda", 1)
+        f_lambda = lambda_config.get("frc_lambda", 1)
+        s_lambda = lambda_config.get("str_lambda", 1)
+        lambd = lambda_config.get("l2_lambda", 0)
 
         loss = {"loss": []}
         energy_target = data["energy"].flatten()
@@ -111,8 +114,10 @@ class MVETrainer(BaseTrainer):
                 preds["stress"].flatten(), stress_target
             )
             loss["loss"].append(s_lambda * loss["loss_s"])
-        elif (hasattr(self.model, "training_mode_for_lammps") \
-                and self.model.training_mode_for_lammps):
+        elif (
+            hasattr(self.model, "training_mode_for_lammps")
+            and self.model.training_mode_for_lammps
+        ):
             loss["loss_s"] = torch.tensor(
                 0.0, device=preds["stress"].device, requires_grad=True
             )
@@ -134,16 +139,26 @@ class MVETrainer(BaseTrainer):
         if log_config == None:
             if self.json_data["regress_forces"]:
                 log_config = {
-                    'step': ['date', 'epoch'],
-                    'train': ['loss', 'loss_e', 'loss_f', 'log_e', 'log_f', 'loss_s', 'enr_var', 'frc_var', 'loss_l2'],
-                    'valid': ['loss', 'loss_e', 'loss_f', 'log_e', 'log_f'],
-                    'lr': ['lr'],
-                    }  # loss_l2
+                    "step": ["date", "epoch"],
+                    "train": [
+                        "loss",
+                        "loss_e",
+                        "loss_f",
+                        "log_e",
+                        "log_f",
+                        "loss_s",
+                        "enr_var",
+                        "frc_var",
+                        "loss_l2",
+                    ],
+                    "valid": ["loss", "loss_e", "loss_f", "log_e", "log_f"],
+                    "lr": ["lr"],
+                }  # loss_l2
             else:
                 log_config = {
-                    'step': ['date', 'epoch'],
-                    'train': ['loss', 'loss_e', 'enr_var'],
-                    'valid': ['loss', 'loss_e'],
-                    'lr': ['lr'],
-                    }
+                    "step": ["date", "epoch"],
+                    "train": ["loss", "loss_e", "enr_var"],
+                    "valid": ["loss", "loss_e"],
+                    "lr": ["lr"],
+                }
         return log_config

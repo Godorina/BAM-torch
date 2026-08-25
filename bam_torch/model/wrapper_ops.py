@@ -10,14 +10,14 @@ Adapted from MACE's mace/modules/wrapper_ops.py, with BAM-specific additions:
 import dataclasses
 import itertools
 import types
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
 
 import numpy as np
 import torch
 from e3nn import o3
 
-from .symmetric_contraction import SymmetricContraction
 from ._sub import FullTensorProduct as o3_FullTensorProduct
+from .symmetric_contraction import SymmetricContraction
 
 try:
     import cuequivariance as cue
@@ -98,9 +98,7 @@ else:
     )
 
 if not OEQ_AVAILABLE:
-    print(
-        "openequivariance not available. OEQ acceleration will be disabled."
-    )
+    print("openequivariance not available. OEQ acceleration will be disabled.")
 
 
 @dataclasses.dataclass
@@ -136,7 +134,7 @@ class OEQConfig:
     enabled: bool = False
     optimize_all: bool = False
     optimize_channelwise: bool = False
-    conv_fusion: Optional[str] = None  # None | "atomic"
+    conv_fusion: str | None = None  # None | "atomic"
 
     def __post_init__(self):
         if not OEQ_AVAILABLE:
@@ -152,7 +150,7 @@ class Linear:
         irreps_out: o3.Irreps,
         shared_weights: bool = True,
         internal_weights: bool = True,
-        cueq_config: Optional[CuEquivarianceConfig] = None,
+        cueq_config: CuEquivarianceConfig | None = None,
     ):
         if (
             CUET_AVAILABLE
@@ -219,12 +217,12 @@ class TensorProduct:
         irreps_in1: o3.Irreps,
         irreps_in2: o3.Irreps,
         irreps_out: o3.Irreps,
-        instructions: Optional[List] = None,
+        instructions: list | None = None,
         shared_weights: bool = False,
         internal_weights: bool = False,
         use_conv_fusion: bool = False,
-        cueq_config: Optional[CuEquivarianceConfig] = None,
-        oeq_config: Optional[OEQConfig] = None,
+        cueq_config: CuEquivarianceConfig | None = None,
+        oeq_config: OEQConfig | None = None,
     ):
         if (
             CUET_AVAILABLE
@@ -304,7 +302,7 @@ class FullTensorProduct:
         irreps_in1: o3.Irreps,
         irreps_in2: o3.Irreps,
         filter_ir_out: o3.Irreps,
-        cueq_config: Optional[CuEquivarianceConfig] = None,
+        cueq_config: CuEquivarianceConfig | None = None,
     ):
         if (
             CUET_AVAILABLE
@@ -335,7 +333,7 @@ class FullyConnectedTensorProduct:
         irreps_out: o3.Irreps,
         shared_weights: bool = True,
         internal_weights: bool = True,
-        cueq_config: Optional[CuEquivarianceConfig] = None,
+        cueq_config: CuEquivarianceConfig | None = None,
     ):
         if (
             CUET_AVAILABLE
@@ -375,9 +373,9 @@ class SymmetricContractionWrapper:
         irreps_in: o3.Irreps,
         irreps_out: o3.Irreps,
         correlation: int,
-        num_elements: Optional[int] = None,
-        cueq_config: Optional[CuEquivarianceConfig] = None,
-        oeq_config: Optional[OEQConfig] = None,  # pylint: disable=unused-argument
+        num_elements: int | None = None,
+        cueq_config: CuEquivarianceConfig | None = None,
+        oeq_config: OEQConfig | None = None,  # pylint: disable=unused-argument
     ):
         if (
             CUET_AVAILABLE
@@ -426,7 +424,7 @@ class TransposeIrrepsLayoutWrapper:
         irreps: o3.Irreps,
         source: str,
         target: str,
-        cueq_config: Optional[CuEquivarianceConfig] = None,
+        cueq_config: CuEquivarianceConfig | None = None,
     ):
         if CUET_AVAILABLE and cueq_config is not None and cueq_config.enabled:
             if source == target:

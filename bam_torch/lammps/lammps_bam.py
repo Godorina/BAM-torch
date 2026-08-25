@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional, Tuple
-
 import torch
 from e3nn.util.jit import compile_mode
 
@@ -9,11 +7,11 @@ from bam_torch.utils.scatter import scatter_sum
 @compile_mode("script")
 class LAMMPS_BAM(torch.nn.Module):
     def __init__(
-        self, 
-        model, 
-        enr_avg_per_element: Dict[int, float], 
-        e_corr: float = 0.0, 
-        **kwargs
+        self,
+        model,
+        enr_avg_per_element: dict[int, float],
+        e_corr: float = 0.0,
+        **kwargs,
     ):
         super().__init__()
         self.model = model
@@ -44,24 +42,27 @@ class LAMMPS_BAM(torch.nn.Module):
 
         for param in self.model.parameters():
             param.requires_grad = False
-            
 
     def forward(
-        self, 
-        data: Dict[str, torch.Tensor], 
-        local_or_ghost: torch.Tensor, 
-        compute_virials: bool = True
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        
+        self,
+        data: dict[str, torch.Tensor],
+        local_or_ghost: torch.Tensor,
+        compute_virials: bool = True,
+    ) -> dict[str, torch.Tensor | None]:
+
         num_graphs = data["ptr"].numel() - 1
         data["head"] = self.head
-        data["num_nodes"] = torch.tensor(data["positions"].shape[0], 
-                                         dtype=torch.long, 
-                                         device=data["positions"].device)
+        data["num_nodes"] = torch.tensor(
+            data["positions"].shape[0],
+            dtype=torch.long,
+            device=data["positions"].device,
+        )
         compute_displacement = False
         if compute_virials:
             compute_displacement = True
-        out = self.model(data, backprop=False, compute_displacement=compute_displacement)
+        out = self.model(
+            data, backprop=False, compute_displacement=compute_displacement
+        )
 
         node_energy = out["node_energy"]
         assert node_energy is not None
@@ -71,15 +72,16 @@ class LAMMPS_BAM(torch.nn.Module):
 
         # n_local = local_or_ghost.sum().item()
         # n_total = local_or_ghost.shape[0]
-        
-        # print(f"Rank {torch.cuda.current_device()}: n_local={n_local}, n_total={n_total}, forces_shape={forces_local.shape}")
 
+        # print(f"Rank {torch.cuda.current_device()}: n_local={n_local}, n_total={n_total}, forces_shape={forces_local.shape}")
 
         species = data["species"]
         local_species = species[local_or_ghost]
         local_node_avg_energies = self.enr_avg_per_element[local_species]
 
-        node_energy[local_or_ghost] = node_energy[local_or_ghost] + local_node_avg_energies
+        node_energy[local_or_ghost] = (
+            node_energy[local_or_ghost] + local_node_avg_energies
+        )
         energy = node_energy.sum()
 
         if self.e_corr != 0.0:
@@ -92,7 +94,7 @@ class LAMMPS_BAM(torch.nn.Module):
             node_energy[local_or_ghost] = node_energy[local_or_ghost] + e_corr_per_local
             energy = energy + (e_corr_per_local * local_count)
 
-        positions = data["positions"] 
+        positions = data["positions"]
         displacement = out["displacement"]
 
         node_energy_local = node_energy * local_or_ghost
@@ -103,10 +105,7 @@ class LAMMPS_BAM(torch.nn.Module):
             dim_size=num_graphs,
         )
 
-
-        grad_outputs: List[Optional[torch.Tensor]] = [
-                    torch.ones_like(total_energy_local)
-                ]
+        grad_outputs: list[torch.Tensor | None] = [torch.ones_like(total_energy_local)]
         if compute_virials and displacement is not None:
             forces, virials = torch.autograd.grad(
                 outputs=[total_energy_local],

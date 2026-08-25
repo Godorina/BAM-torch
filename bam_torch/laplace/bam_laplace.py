@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import torch
-
-from .bam_baselaplace import BaseLaplace
 from laplace.utils.enums import (
     HessianStructure,
     Likelihood,
     SubsetOfWeights,
 )
-from typing import Any
+
+from .bam_baselaplace import BaseLaplace
 
 
 def Laplace(
@@ -45,8 +44,7 @@ def Laplace(
         if hasattr(subclass, "_key")
     }
     laplace_class = laplace_map[(subset_of_weights, hessian_structure)]
-    return laplace_class(
-        model, likelihood, *args, **kwargs)
+    return laplace_class(model, likelihood, *args, **kwargs)
 
 
 def _all_subclasses(cls) -> set:

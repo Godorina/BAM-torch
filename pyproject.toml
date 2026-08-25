@@ -35,8 +35,7 @@ dependencies = [
 # by the core training/inference path — bam_torch.utils.scatter is a pure-PyTorch
 # scatter and torch_geometric's Data/Batch/DataLoader work without them.
 # They are only needed by the optional group_averaging module
-# (torch_scatter via group_averaging/model/blocks.py, torch_cluster via the
-# radius_graph call in group_averaging/utils/ga_utils.py). Install them via
+# (including torch_scatter from group_averaging/model/blocks.py). Install them via
 # install_deps.py against the matching PyG wheel index, then `pip install -e ".[group_averaging]"`.
 [project.optional-dependencies]
 cueq = ["cuequivariance-torch", "cuequivariance", "cuequivariance-ops-torch-cu12"]
@@ -48,6 +47,106 @@ economics = ["pandas", "scikit-learn", "openpyxl"]
 [project.urls]
 Homepage = "https://github.com/myung-group/BAM-torch"
 
-[tool.setuptools]
-packages = {find = {}}
+# torch_scatter / torch_cluster (the optional group_averaging extra) are
+# published as sdists only, and their setup.py imports torch without declaring
+# it as a build dependency. Resolving them would therefore force uv to compile
+# the native extensions just to read their metadata. Declaring that metadata
+# statically keeps `uv lock` universal and build-free, while the extensions
+# themselves stay installed out-of-band from the matching PyG wheel index via
+# install_deps.py. These entries are version-pinned on purpose: a new upstream
+# release fails the lock loudly instead of silently inheriting stale metadata.
+[[tool.uv.dependency-metadata]]
+name = "torch-scatter"
+version = "2.1.2"
+requires-dist = []
+requires-python = ">=3.8"
+
+[[tool.uv.dependency-metadata]]
+name = "torch-cluster"
+version = "1.6.3"
+requires-dist = ["scipy"]
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+# bam_torch/ is a PEP 420 namespace package (it has no top-level __init__.py),
+# so the namespace-aware discovery that pyproject.toml enables by default is
+# required here. The explicit include keeps sibling directories -- examples/,
+# tests/, licenses/ -- from being published as top-level packages.
+include = ["bam_torch*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures"]
+
+# Ruff formats and lints the maintained code only: bam_torch/ and
+# install_deps.py, which are the paths the quality commands pass explicitly.
+# examples/ ships user-editable scientific scripts and generated run artifacts, and
+# notebook checkpoints are machine-written copies, so both stay outside the
+# baseline instead of being reformatted.
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+extend-exclude = [
+    "examples",
+    "licenses",
+    "**/.ipynb_checkpoints",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# Deliberately narrow first baseline: correctness (Pyflakes, pycodestyle
+# syntax/IO errors), import hygiene, and Python-version upgrades. Style-only
+# families that would demand semantic rewrites of the scientific code are not
+# enabled yet; the formatter owns whitespace, quotes, and line wrapping.
+select = [
+    "E4", # pycodestyle: import placement
+    "E9", # pycodestyle: syntax and IO errors
+    "F",  # Pyflakes correctness
+    "I",  # isort: import ordering
+    "UP", # pyupgrade: py311 syntax
+    "W6", # pycodestyle: deprecated/invalid escapes and syntax warnings
+]
+ignore = [
+    # 26 unused locals remain in the training/model code. Ruff can only remove
+    # them with an unsafe fix because deleting an assignment also deletes the
+    # right-hand side's evaluation, and several of them look like unfinished
+    # science rather than dead style, so this baseline records them instead of
+    # silently rewriting evaluation-bearing assignments.
+    "F841",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Module-level imports that intentionally sit below code. Hoisting them changes
+# import order (and, in the model package, risks an import cycle), which is a
+# runtime change rather than a formatting one.
+"bam_torch/laplace/post_hoc_laplace.py" = ["E402"]
+"bam_torch/model/models.py" = ["E402"]
+"bam_torch/model/radial.py" = ["E402"]
+# Latent defects found while establishing this baseline, not style debt:
+# ga_trainer.py references an undefined `cfg` in two `raise ValueError` paths,
+# and transformer.py annotates a local with an undefined `List`. Both are
+# repairing them changes runtime behavior, so the baseline records them
+# instead of rewriting the code.
+"bam_torch/group_averaging/training/ga_trainer.py" = ["F821"]
+"bam_torch/group_averaging/model/transformer.py" = ["F821"]
+# FORWARD_REGISTRY repeats the "stochastic" key; dropping either entry changes
+# which forward function the registry resolves. Also reported, not rewritten.
+"bam_torch/group_averaging/training/__init__.py" = ["F601"]
+
+# ty is the authoritative type checker for automation. Start with the
+# dependency-light economics surface and expand this list as legacy modules are
+# annotated; diagnostics remain enabled at ty's defaults within this baseline.
+[tool.ty.src]
+include = ["bam_torch/economics"]
+
+[tool.ty.analysis]
+# These economics dependencies are optional and imported behind explicit guards.
+allowed-unresolved-imports = ["pandas", "pandas.**", "sklearn", "sklearn.**"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.0.2",
+    "ruff==0.16.4",
+    "ty==0.0.74",
+]
 

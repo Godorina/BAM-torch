@@ -1,8 +1,8 @@
 from .group_averaging import (
+    data_augmentation,
     frame_averaging_2D,
     frame_averaging_3D,
-    data_augmentation,
-    probablistic_averaging_3D
+    probablistic_averaging_3D,
 )
 
 
@@ -54,13 +54,7 @@ class FrameAveraging(Transform):
         )
         self.frame_averaging = "" if frame_averaging is None else frame_averaging
         self.inactive = not self.frame_averaging
-        assert self.frame_averaging in {
-            "",
-            "2D",
-            "3D",
-            "DA",
-            "no"
-        }
+        assert self.frame_averaging in {"", "2D", "3D", "DA", "no"}
         assert self.fa_method in {
             "",
             "stochastic",
@@ -70,7 +64,7 @@ class FrameAveraging(Transform):
             "se3-det",
             "se3-all",
             "prob",
-            "no"
+            "no",
         }
 
         if self.frame_averaging:
@@ -87,7 +81,7 @@ class FrameAveraging(Transform):
                 self.fa_func = None
             else:
                 raise ValueError(f"Unknown frame averaging: {self.frame_averaging}")
-        
+
         self.permute = permute
 
     def __call__(self, data, equiv_model=None, n_samples=1):
@@ -102,17 +96,25 @@ class FrameAveraging(Transform):
 
         elif self.frame_averaging == "no" or self.fa_method == "no":
             data.fa_pos = data.positions
-            data.fa_cell = data.cell 
+            data.fa_cell = data.cell
             data.fa_rot = None
             return data, entropy_loss
 
         elif self.fa_method == "prob":
-            data.fa_pos, data.fa_cell, data.fa_rot, data.fa_species, data.fa_edge_index, entropy_loss \
-                = self.pa_func(data, equiv_model, n_samples, self.fa_method, self.permute)
+            (
+                data.fa_pos,
+                data.fa_cell,
+                data.fa_rot,
+                data.fa_species,
+                data.fa_edge_index,
+                entropy_loss,
+            ) = self.pa_func(data, equiv_model, n_samples, self.fa_method, self.permute)
             return data, entropy_loss
 
         else:
             data.fa_pos, data.fa_cell, data.fa_rot = self.fa_func(
-                data.positions, data.cell if hasattr(data, "cell") else None, self.fa_method
+                data.positions,
+                data.cell if hasattr(data, "cell") else None,
+                self.fa_method,
             )
             return data, entropy_loss

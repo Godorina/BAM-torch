@@ -9,18 +9,16 @@ N-Head Multihead Finetuning Trainer:
 Uses RACEMultihead model from bam_torch.model.models
 """
 
-import os
-import gc
-import signal
 import atexit
-import torch
-import numpy as np
-from typing import Dict, Any, List
-from pathlib import Path
-from datetime import datetime
+import gc
+import os
+import signal
 from contextlib import nullcontext
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch
 from e3nn import o3
 
 try:
@@ -28,15 +26,16 @@ try:
 except ImportError:
     tqdm = None
 
-from .base_trainer import BaseTrainer
-from .loss import RMSELoss, HuberLoss, l2_regularization
-from bam_torch.utils.utils import date, get_dataloader_multihead
 from bam_torch.model.wrapper_ops import (
-    CuEquivarianceConfig,
-    OEQConfig,
     CUET_AVAILABLE,
     OEQ_AVAILABLE,
+    CuEquivarianceConfig,
+    OEQConfig,
 )
+from bam_torch.utils.utils import get_dataloader_multihead
+
+from .base_trainer import BaseTrainer
+from .loss import HuberLoss, RMSELoss, l2_regularization
 
 try:
     from torch_ema import ExponentialMovingAverage
@@ -57,7 +56,7 @@ class MultiheadTrainer(BaseTrainer):
     Compatible with GitHub latest BaseTrainer (setup() pattern)
     """
 
-    def __init__(self, json_data: Dict[str, Any], rank: int = 0, world_size: int = 1):
+    def __init__(self, json_data: dict[str, Any], rank: int = 0, world_size: int = 1):
         # Multihead config pre-processing (needed before super().__init__)
         self.multihead_config = json_data.get("multihead", {})
         if not self.multihead_config.get("enabled", False):
@@ -69,7 +68,9 @@ class MultiheadTrainer(BaseTrainer):
             raise ValueError("multihead.datasets must be specified and non-empty")
 
         # Head names and weights
-        self.heads = [ds.get("name", f"head_{i}") for i, ds in enumerate(self.datasets_config)]
+        self.heads = [
+            ds.get("name", f"head_{i}") for i, ds in enumerate(self.datasets_config)
+        ]
         self.num_heads = len(self.heads)
         self.loss_weights = [ds.get("loss_weight", 1.0) for ds in self.datasets_config]
 
@@ -88,17 +89,22 @@ class MultiheadTrainer(BaseTrainer):
 
         super().__init__(json_data, rank, world_size)
 
-    def _extract_foundation_config(self, json_data: Dict[str, Any], rank: int) -> Dict[str, Any]:
-        """Return the input.json of the foundation model
-        """
-        foundation_path = json_data.get('NN', {}).get('foundation_model')
+    def _extract_foundation_config(
+        self, json_data: dict[str, Any], rank: int
+    ) -> dict[str, Any]:
+        """Return the input.json of the foundation model"""
+        foundation_path = json_data.get("NN", {}).get("foundation_model")
         if not foundation_path:
-            raise ValueError("foundation_model must be specified in NN config for multihead finetuning")
+            raise ValueError(
+                "foundation_model must be specified in NN config for multihead finetuning"
+            )
         if not os.path.exists(foundation_path):
             raise FileNotFoundError(f"Foundation model not found: {foundation_path}")
 
-        foundation_ckpt = torch.load(foundation_path, map_location='cpu', weights_only=False)
-        foundation_json = foundation_ckpt.get('input.json', {})
+        foundation_ckpt = torch.load(
+            foundation_path, map_location="cpu", weights_only=False
+        )
+        foundation_json = foundation_ckpt.get("input.json", {})
 
         if rank == 0 and foundation_json:
             print(f"✓ Loaded foundation config from {foundation_path}")
@@ -118,78 +124,101 @@ class MultiheadTrainer(BaseTrainer):
         self.model, self.n_params, _, self.start_epoch = self.configure_model()
 
         # Load the foundation model (if not restart)
-        if not self.json_data['NN'].get('restart', False):
+        if not self.json_data["NN"].get("restart", False):
             self._load_foundation_model()
 
         self.optimizer = self.configure_optimizer()
-        self.train_loader, self.valid_loader, self.uniq_element, self.enr_avg_per_element \
-                       = self.configure_dataloader()
+        (
+            self.train_loader,
+            self.valid_loader,
+            self.uniq_element,
+            self.enr_avg_per_element,
+        ) = self.configure_dataloader()
         self.scheduler = self.configure_scheduler()
         self.loss_fn, self.loss_config = self.configure_loss()
         self.log_config, self.log_interval, self.logger = self.configure_logger()
         self.loss_dict, self.ckpt = self.configure_checkpoint()
         self.ema = self.configure_exponential_moving_average()
 
-    def _setup_batch_logs(self, json_data: Dict[str, Any], rank: int):
-        """Set Batch logs directory and log-file
-        """
+    def _setup_batch_logs(self, json_data: dict[str, Any], rank: int):
+        """Set Batch logs directory and log-file"""
         # Get Node ID and Local GPU rank
-        if 'SLURM_NODEID' in os.environ:
-            node_id = int(os.environ['SLURM_NODEID'])
-        elif 'NODE_RANK' in os.environ:
-            node_id = int(os.environ['NODE_RANK'])
+        if "SLURM_NODEID" in os.environ:
+            node_id = int(os.environ["SLURM_NODEID"])
+        elif "NODE_RANK" in os.environ:
+            node_id = int(os.environ["NODE_RANK"])
         else:
             node_id = 0
 
-        if 'SLURM_LOCALID' in os.environ:
-            local_rank = int(os.environ['SLURM_LOCALID'])
-        elif 'LOCAL_RANK' in os.environ:
-            local_rank = int(os.environ['LOCAL_RANK'])
+        if "SLURM_LOCALID" in os.environ:
+            local_rank = int(os.environ["SLURM_LOCALID"])
+        elif "LOCAL_RANK" in os.environ:
+            local_rank = int(os.environ["LOCAL_RANK"])
         else:
             local_rank = rank
 
         # Set batch size and log-directory/file per rank
-        batch_log_root = Path(json_data.get('batch_size_log_root', 'batch_logs'))
+        batch_log_root = Path(json_data.get("batch_size_log_root", "batch_logs"))
         self.batch_log_dir = batch_log_root / f"rank_{rank}"
         self.batch_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Set logfile per GPU (generated in batch_log_dir)
-        log_filename = self.batch_log_dir / f'node{node_id}_gpu{local_rank}_global{rank}.log'
-        self.gpu_log = open(log_filename, 'w')
-        atexit.register(lambda: self.gpu_log.close() if hasattr(self, 'gpu_log') and not self.gpu_log.closed else None)
+        log_filename = (
+            self.batch_log_dir / f"node{node_id}_gpu{local_rank}_global{rank}.log"
+        )
+        self.gpu_log = open(log_filename, "w")
+        atexit.register(
+            lambda: (
+                self.gpu_log.close()
+                if hasattr(self, "gpu_log") and not self.gpu_log.closed
+                else None
+            )
+        )
 
-        print(f"[Rank {rank}] Initialized - Node: {node_id}, Local GPU: {local_rank}",
-              file=self.gpu_log, flush=True)
+        print(
+            f"[Rank {rank}] Initialized - Node: {node_id}, Local GPU: {local_rank}",
+            file=self.gpu_log,
+            flush=True,
+        )
 
         batch_log_filename = self.batch_log_dir / "batch_sizes.log"
-        self.batch_size_log = open(batch_log_filename, 'w')
+        self.batch_size_log = open(batch_log_filename, "w")
         self.batch_size_log.write(
             f"# Batch size log for rank {rank} (node {node_id}, local GPU {local_rank})\n"
         )
-        self.batch_size_log.write("# timestamp,epoch,mode,file,batch_idx,graphs,total_nodes,total_edges,head_composition\n")
+        self.batch_size_log.write(
+            "# timestamp,epoch,mode,file,batch_idx,graphs,total_nodes,total_edges,head_composition\n"
+        )
         self.batch_size_log.flush()
-        atexit.register(lambda: self.batch_size_log.close() if hasattr(self, 'batch_size_log') and not self.batch_size_log.closed else None)
+        atexit.register(
+            lambda: (
+                self.batch_size_log.close()
+                if hasattr(self, "batch_size_log") and not self.batch_size_log.closed
+                else None
+            )
+        )
 
         if rank == 0:
             print(f"✓ Batch logs directory created: {batch_log_root}")
 
     def _log_batch_size(self, mode: str, batch_idx: int, data, epoch: int = 0):
-        """Report the batch size information to log-file
-        """
-        if not hasattr(self, 'batch_size_log') or self.batch_size_log.closed:
+        """Report the batch size information to log-file"""
+        if not hasattr(self, "batch_size_log") or self.batch_size_log.closed:
             return
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # The number of graph in the batch
-        num_graphs = data.ptr.numel() - 1 if hasattr(data, 'ptr') else 1
+        num_graphs = data.ptr.numel() - 1 if hasattr(data, "ptr") else 1
 
         # The total number of nodes and edges
-        total_nodes = data.num_nodes if hasattr(data, 'num_nodes') else len(data.positions)
-        total_edges = data.edge_index.shape[1] if hasattr(data, 'edge_index') else 0
+        total_nodes = (
+            data.num_nodes if hasattr(data, "num_nodes") else len(data.positions)
+        )
+        total_edges = data.edge_index.shape[1] if hasattr(data, "edge_index") else 0
 
         # Head configuration
-        if hasattr(data, 'head'):
+        if hasattr(data, "head"):
             head_counts = {}
             heads = data.head.flatten().tolist()
             for h in heads:
@@ -213,37 +242,41 @@ class MultiheadTrainer(BaseTrainer):
         if self.foundation_config:
             fc = self.foundation_config
             if self.rank == 0:
-                print(f"\n\033[36mUsing Foundation model config:\033[0m")
+                print("\n\033[36mUsing Foundation model config:\033[0m")
                 print(f"  - hidden_channels: {fc.get('hidden_channels', 'N/A')}")
                 print(f"  - features_dim: {fc.get('features_dim', 'N/A')}")
                 print(f"  - nlayers: {fc.get('nlayers', 'N/A')}")
                 print(f"  - cutoff: {fc.get('cutoff', 'N/A')}")
 
             # Load from the foundation config
-            hidden_irreps_str = fc.get('hidden_channels', model_config['hidden_channels'])
+            hidden_irreps_str = fc.get(
+                "hidden_channels", model_config["hidden_channels"]
+            )
             hidden_irreps = o3.Irreps(hidden_irreps_str)
-            features_dim = fc.get('features_dim', model_config['features_dim'])
-            nlayers = fc.get('nlayers', model_config['nlayers'])
-            cutoff = fc.get('cutoff', model_config['cutoff'])
-            num_basis_func = fc.get('num_radial_basis', model_config['num_radial_basis'])
-            max_ell = fc.get('max_ell', model_config['max_ell'])
+            features_dim = fc.get("features_dim", model_config["features_dim"])
+            nlayers = fc.get("nlayers", model_config["nlayers"])
+            cutoff = fc.get("cutoff", model_config["cutoff"])
+            num_basis_func = fc.get(
+                "num_radial_basis", model_config["num_radial_basis"]
+            )
+            max_ell = fc.get("max_ell", model_config["max_ell"])
         else:
             # If not exist the foundation config, load from input.json
-            hidden_irreps = o3.Irreps(model_config['hidden_channels'])
-            features_dim = model_config['features_dim']
-            nlayers = model_config['nlayers']
-            cutoff = model_config['cutoff']
-            num_basis_func = model_config['num_radial_basis']
-            max_ell = model_config['max_ell']
+            hidden_irreps = o3.Irreps(model_config["hidden_channels"])
+            features_dim = model_config["features_dim"]
+            nlayers = model_config["nlayers"]
+            cutoff = model_config["cutoff"]
+            num_basis_func = model_config["num_radial_basis"]
+            max_ell = model_config["max_ell"]
 
         # Load the remaining (dataset-related) settings from input.json
-        avg_num_neighbors = model_config['avg_num_neighbors']
-        num_species = model_config['num_species']
+        avg_num_neighbors = model_config["avg_num_neighbors"]
+        num_species = model_config["num_species"]
 
-        output_irreps = model_config.get('output_channels', "1x0e")
-        active_fn = model_config.get('active_fn', "identity")
+        output_irreps = model_config.get("output_channels", "1x0e")
+        active_fn = model_config.get("active_fn", "identity")
 
-        regress_forces = model_config.get('regress_forces')
+        regress_forces = model_config.get("regress_forces")
         if regress_forces == True:
             regress_forces = "autograd"
         elif regress_forces == False:
@@ -256,14 +289,14 @@ class MultiheadTrainer(BaseTrainer):
         # to input.json if the foundation config is missing.
         fc = self.foundation_config or {}
         interaction_block = fc.get(
-            'interaction_block',
-            model_config.get('interaction_block', 'slow'),
+            "interaction_block",
+            model_config.get("interaction_block", "slow"),
         )
-        cueq_request = fc.get('cueq_config', model_config.get('cueq_config'))
-        oeq_request = fc.get('oeq_config', model_config.get('oeq_config'))
+        cueq_request = fc.get("cueq_config", model_config.get("cueq_config"))
+        oeq_request = fc.get("oeq_config", model_config.get("oeq_config"))
         l_separated_layer_norm = fc.get(
-            'l_separated_layer_norm',
-            model_config.get('l_separated_layer_norm', False),
+            "l_separated_layer_norm",
+            model_config.get("l_separated_layer_norm", False),
         )
 
         cueq_config = None
@@ -312,14 +345,14 @@ class MultiheadTrainer(BaseTrainer):
         )
 
         radial_polynomial_p = fc.get(
-            'radial_polynomial_p', model_config.get('radial_polynomial_p')
+            "radial_polynomial_p", model_config.get("radial_polynomial_p")
         )
         if radial_polynomial_p is not None:
-            race_kwargs['radial_polynomial_p'] = radial_polynomial_p
+            race_kwargs["radial_polynomial_p"] = radial_polynomial_p
 
         model = RACEUnified(**race_kwargs)
 
-        self.msg += f'\n\033[33m -- Multihead model with {self.num_heads} heads: {self.heads}\033[0m\n'
+        self.msg += f"\n\033[33m -- Multihead model with {self.num_heads} heads: {self.heads}\033[0m\n"
 
         return model
 
@@ -331,25 +364,33 @@ class MultiheadTrainer(BaseTrainer):
             enr_avg_per_element: {species_index: energy}
             uniq_element: {atomic_number: species_index}
         """
-        foundation_path = self.json_data.get('NN', {}).get('foundation_model')
+        foundation_path = self.json_data.get("NN", {}).get("foundation_model")
         if not foundation_path or not os.path.exists(foundation_path):
             if self.rank == 0:
-                print("⚠️ No foundation model specified, cannot load foundation enr_avg_per_element")
+                print(
+                    "⚠️ No foundation model specified, cannot load foundation enr_avg_per_element"
+                )
             return None, None
 
         try:
-            foundation_ckpt = torch.load(foundation_path, map_location='cpu', weights_only=False)
+            foundation_ckpt = torch.load(
+                foundation_path, map_location="cpu", weights_only=False
+            )
 
-            enr_avg_per_element = foundation_ckpt.get('enr_avg_per_element')
-            uniq_element = foundation_ckpt.get('uniq_element')
+            enr_avg_per_element = foundation_ckpt.get("enr_avg_per_element")
+            uniq_element = foundation_ckpt.get("uniq_element")
 
             if enr_avg_per_element is None or uniq_element is None:
                 if self.rank == 0:
-                    print("⚠️ Foundation model does not contain enr_avg_per_element or uniq_element")
+                    print(
+                        "⚠️ Foundation model does not contain enr_avg_per_element or uniq_element"
+                    )
                 return None, None
 
             if self.rank == 0:
-                print(f"✓ Loaded foundation enr_avg_per_element ({len(enr_avg_per_element)} species)")
+                print(
+                    f"✓ Loaded foundation enr_avg_per_element ({len(enr_avg_per_element)} species)"
+                )
 
             return enr_avg_per_element, uniq_element
 
@@ -359,24 +400,24 @@ class MultiheadTrainer(BaseTrainer):
             return None, None
 
     def _load_foundation_model(self):
-        """Load foundation model weights and extend the readout layers
-        """
-        foundation_path = self.json_data['NN']['foundation_model']
+        """Load foundation model weights and extend the readout layers"""
+        foundation_path = self.json_data["NN"]["foundation_model"]
 
         if self.rank == 0:
-            print(f"\n{'='*80}")
+            print(f"\n{'=' * 80}")
             print(f"Loading Foundation model: {foundation_path}")
-            print(f"{'='*80}\n")
+            print(f"{'=' * 80}\n")
 
         # BAM-torch pkl format: {'params': state_dict, ...}
-        foundation_ckpt = torch.load(foundation_path, map_location='cpu', weights_only=False)
-        foundation_state = foundation_ckpt['params']
+        foundation_ckpt = torch.load(
+            foundation_path, map_location="cpu", weights_only=False
+        )
+        foundation_state = foundation_ckpt["params"]
 
         # Refer present model
         model = self.model.module if self.ddp else self.model
 
         self._load_from_state_dict(model, foundation_state, self.num_heads)
-
 
     def _load_from_state_dict(self, model, foundation_state, num_heads):
         """
@@ -412,11 +453,10 @@ class MultiheadTrainer(BaseTrainer):
         # parameters (interactions, products, embeddings, last-layer readout)
         # still load normally below.
         legacy_keys = [
-            n for n in foundation_state.keys()
-            if 'readouts.' in n and (
-                n.endswith('.linear.weight')
-                or n.endswith('.linear.output_mask')
-            )
+            n
+            for n in foundation_state.keys()
+            if "readouts." in n
+            and (n.endswith(".linear.weight") or n.endswith(".linear.output_mask"))
         ]
         if legacy_keys:
             for n in legacy_keys:
@@ -437,21 +477,29 @@ class MultiheadTrainer(BaseTrainer):
         readout_expanded = 0
         skipped_readout = []
         # Extract MLP_dim and hidden_dim_0e from the foundation NonLinearReadoutBlock
-        mlp_dim = next(p.numel() for n, p in foundation_state.items()
-                       if 'linear_2.weight' in n and p.numel() > 0)
-        linear_1_numel = next(p.numel() for n, p in foundation_state.items()
-                              if 'linear_1.weight' in n and p.numel() > 0)
+        mlp_dim = next(
+            p.numel()
+            for n, p in foundation_state.items()
+            if "linear_2.weight" in n and p.numel() > 0
+        )
+        linear_1_numel = next(
+            p.numel()
+            for n, p in foundation_state.items()
+            if "linear_1.weight" in n and p.numel() > 0
+        )
         hidden_dim_0e = linear_1_numel // mlp_dim
 
         target_output_dim = num_heads
 
         if self.rank == 0:
-            print(f"  - hidden_dim_0e: {hidden_dim_0e} (from linear_1.weight / MLP_dim)")
+            print(
+                f"  - hidden_dim_0e: {hidden_dim_0e} (from linear_1.weight / MLP_dim)"
+            )
             print(f"  - MLP_dim: {mlp_dim} (from linear_2.weight)")
             print(f"  - num_heads: {num_heads}")
 
         for name, param in foundation_state.items():
-            clean_name = name[7:] if name.startswith('module.') else name
+            clean_name = name[7:] if name.startswith("module.") else name
 
             if clean_name not in current_state:
                 continue
@@ -459,7 +507,7 @@ class MultiheadTrainer(BaseTrainer):
             target_param = current_state[clean_name]
 
             # Readout parameters require extension
-            if 'readouts' in clean_name:
+            if "readouts" in clean_name:
                 if param.numel() == 0:
                     # Empty parameter (no bias)
                     continue
@@ -467,56 +515,68 @@ class MultiheadTrainer(BaseTrainer):
                 expanded = None
                 scale_factor = 1.0
 
-                if 'linear_1.weight' in clean_name:
+                if "linear_1.weight" in clean_name:
                     # Foundation: [hidden_0e * MLP_dim] = [8192]
                     # Target: [hidden_0e * MLP_dim * num_heads] = [16384]
                     # (MLP_dim, hidden_0e) -> (MLP_dim * num_heads, hidden_0e)
                     if param.numel() == hidden_dim_0e * mlp_dim:
-                        expanded = param.view(mlp_dim, hidden_dim_0e).repeat(num_heads, 1).flatten()
+                        expanded = (
+                            param.view(mlp_dim, hidden_dim_0e)
+                            .repeat(num_heads, 1)
+                            .flatten()
+                        )
                     else:
                         # Fallback
                         expanded = param.repeat(num_heads)
 
-                elif 'linear_1.output_mask' in clean_name:
+                elif "linear_1.output_mask" in clean_name:
                     # Foundation: [MLP_dim] = [64]
                     # Target: [MLP_dim * num_heads] = [128]
                     expanded = param.repeat(num_heads)
 
-                elif 'linear_1.bias' in clean_name:
+                elif "linear_1.bias" in clean_name:
                     # Foundation: [] or [MLP_dim]
                     # Target: [MLP_dim * num_heads]
                     if param.numel() > 0:
                         expanded = param.repeat(num_heads)
 
-                elif 'linear_2.weight' in clean_name:
+                elif "linear_2.weight" in clean_name:
                     # Foundation: [MLP_dim * 1] = [64]
                     # Target: [MLP_dim * num_heads * num_heads] = [256]
                     # Scailing: / sqrt(MLP_dim / target_output_dim)
                     if param.numel() == mlp_dim:
                         # view(1, MLP_dim).repeat(num_heads, num_heads) -> [num_heads, MLP_dim * num_heads]
-                        expanded = param.view(1, mlp_dim).repeat(num_heads, num_heads).flatten()
+                        expanded = (
+                            param.view(1, mlp_dim)
+                            .repeat(num_heads, num_heads)
+                            .flatten()
+                        )
                         # Scailing
                         scale_factor = (mlp_dim / target_output_dim) ** 0.5
                         expanded = expanded / scale_factor
                     else:
                         expanded = param.repeat(num_heads * num_heads)
 
-                elif 'linear_2.output_mask' in clean_name:
+                elif "linear_2.output_mask" in clean_name:
                     # Foundation: [1]
                     # Target: [num_heads] = [2]
                     expanded = param.repeat(num_heads)
 
-                elif 'linear_2.bias' in clean_name:
+                elif "linear_2.bias" in clean_name:
                     # Foundation: [] or [1]
                     # Target: [num_heads]
                     if param.numel() > 0:
                         expanded = param.repeat(num_heads)
 
-                elif 'linear.weight' in clean_name:
+                elif "linear.weight" in clean_name:
                     # LinearReadoutBlock: [hidden_dim_0e * output_dim]
                     if param.numel() % hidden_dim_0e == 0:
                         output_dim_linear = param.numel() // hidden_dim_0e
-                        expanded = param.view(hidden_dim_0e, output_dim_linear).repeat(1, num_heads).flatten()
+                        expanded = (
+                            param.view(hidden_dim_0e, output_dim_linear)
+                            .repeat(1, num_heads)
+                            .flatten()
+                        )
                         # Scailing
                         if output_dim_linear == 1:
                             scale_factor = (hidden_dim_0e / target_output_dim) ** 0.5
@@ -524,7 +584,7 @@ class MultiheadTrainer(BaseTrainer):
                     else:
                         expanded = param.repeat(num_heads)
 
-                elif 'linear.output_mask' in clean_name:
+                elif "linear.output_mask" in clean_name:
                     expanded = param.repeat(num_heads)
 
                 if expanded is not None:
@@ -535,7 +595,9 @@ class MultiheadTrainer(BaseTrainer):
                         if self.rank == 0 and scale_factor != 1.0:
                             print(f"    {clean_name}: scaled by 1/{scale_factor:.2f}")
                         elif self.rank == 0:
-                            print(f"    {clean_name}: expanded {param.shape} -> {expanded.shape}")
+                            print(
+                                f"    {clean_name}: expanded {param.shape} -> {expanded.shape}"
+                            )
                     elif target_param.shape == param.shape:
                         current_state[clean_name].copy_(param)
                         loaded_count += 1
@@ -552,7 +614,7 @@ class MultiheadTrainer(BaseTrainer):
         model.load_state_dict(current_state, strict=False)
 
         if self.rank == 0:
-            print(f"✓ Foundation model loaded")
+            print("✓ Foundation model loaded")
             print(f"  - Loaded {loaded_count} parameters")
             print(f"  - Readout expanded: {readout_expanded} parameters")
             if skipped_readout:
@@ -571,23 +633,28 @@ class MultiheadTrainer(BaseTrainer):
         foundation_enr_avg, foundation_uniq_element = self._load_foundation_enr_avg()
 
         # Smoke test config
-        smoke_config = self.json_data.get('smoke_test', {})
+        smoke_config = self.json_data.get("smoke_test", {})
 
-        (train_loader, valid_loader,
-         per_head_train_loaders, per_head_valid_loaders,
-         uniq_element, enr_avg_per_element, per_head_enr_avg) = \
-            get_dataloader_multihead(
-                self.datasets_config,
-                self.json_data['cutoff'],
-                self.json_data['nbatch'],
-                self.json_data.get('regress_forces', True),
-                self.json_data.get('max_neigh'),
-                foundation_enr_avg,
-                foundation_uniq_element,
-                self.rank,
-                self.world_size,
-                smoke_config=smoke_config
-            )
+        (
+            train_loader,
+            valid_loader,
+            per_head_train_loaders,
+            per_head_valid_loaders,
+            uniq_element,
+            enr_avg_per_element,
+            per_head_enr_avg,
+        ) = get_dataloader_multihead(
+            self.datasets_config,
+            self.json_data["cutoff"],
+            self.json_data["nbatch"],
+            self.json_data.get("regress_forces", True),
+            self.json_data.get("max_neigh"),
+            foundation_enr_avg,
+            foundation_uniq_element,
+            self.rank,
+            self.world_size,
+            smoke_config=smoke_config,
+        )
 
         # Store per-head loaders (JAX-style separate streams)
         self.per_head_train_loaders = per_head_train_loaders
@@ -598,32 +665,36 @@ class MultiheadTrainer(BaseTrainer):
 
         return train_loader, valid_loader, uniq_element, enr_avg_per_element
 
-    def configure_loss(self, reduction='mean'):
+    def configure_loss(self, reduction="mean"):
         nn_config = self.json_data.get("NN", {})
         loss_config = nn_config.get("loss_config", {})
 
         if not loss_config:
             if self.json_data.get("regress_forces"):
-                loss_config = {'energy_loss': 'huber', 'force_loss': 'huber', 'stress_loss': 'huber'}
+                loss_config = {
+                    "energy_loss": "huber",
+                    "force_loss": "huber",
+                    "stress_loss": "huber",
+                }
             else:
-                loss_config = {'energy_loss': 'huber'}
+                loss_config = {"energy_loss": "huber"}
 
         s_lambda = nn_config.get("str_lambda", 0)
-        if loss_config.get('stress_loss') is None and s_lambda:
-            loss_config['stress_loss'] = 'mse'
+        if loss_config.get("stress_loss") is None and s_lambda:
+            loss_config["stress_loss"] = "mse"
 
-        huber_delta = loss_config.get('huber_delta', 0.01)
+        huber_delta = loss_config.get("huber_delta", 0.01)
 
         loss_fn = {}
-        for loss_key in ['energy_loss', 'force_loss', 'stress_loss']:
+        for loss_key in ["energy_loss", "force_loss", "stress_loss"]:
             loss_name = loss_config.get(loss_key)
-            if loss_name in ['l1', 'L1', 'mae', 'MAE']:
+            if loss_name in ["l1", "L1", "mae", "MAE"]:
                 loss_fn[loss_key] = torch.nn.L1Loss(reduction=reduction)
-            elif loss_name in ['mse', 'MSE']:
+            elif loss_name in ["mse", "MSE"]:
                 loss_fn[loss_key] = torch.nn.MSELoss(reduction=reduction)
-            elif loss_name in ['rmse', 'RMSE']:
+            elif loss_name in ["rmse", "RMSE"]:
                 loss_fn[loss_key] = RMSELoss(reduction=reduction)
-            elif loss_name in ['huber', 'Huber', 'HUBER']:
+            elif loss_name in ["huber", "Huber", "HUBER"]:
                 loss_fn[loss_key] = HuberLoss(huber_delta=huber_delta)
             else:
                 loss_fn[loss_key] = None
@@ -635,38 +706,48 @@ class MultiheadTrainer(BaseTrainer):
         Override: compute weighted loss per head
         """
         lambda_config = self.json_data["NN"]
-        e_lambda = lambda_config.get('enr_lambda', 1.0)
-        f_lambda = lambda_config.get('frc_lambda', 1.0)
-        s_lambda = lambda_config.get('str_lambda', 1.0)
-        lambd = lambda_config.get('l2_lambda', 0)
+        e_lambda = lambda_config.get("enr_lambda", 1.0)
+        f_lambda = lambda_config.get("frc_lambda", 1.0)
+        s_lambda = lambda_config.get("str_lambda", 1.0)
+        lambd = lambda_config.get("l2_lambda", 0)
 
         loss = {"loss": []}
 
         # Load heads and weights from the config
-        if 'config_head' in data:
-            config_heads = data['config_head'].flatten()
-        elif 'head' in data:
+        if "config_head" in data:
+            config_heads = data["config_head"].flatten()
+        elif "head" in data:
             # If the head is graph-level, expand it to batch level
-            if hasattr(data, 'batch'):
+            if hasattr(data, "batch"):
                 # Convert per-graph heads to per-configuration heads
-                ptr = data.get('ptr')
+                ptr = data.get("ptr")
                 if ptr is not None and ptr.numel() > 1:
                     batch_size = ptr.numel() - 1
-                    config_heads = torch.zeros(batch_size, dtype=torch.long, device=data['head'].device)
+                    config_heads = torch.zeros(
+                        batch_size, dtype=torch.long, device=data["head"].device
+                    )
                     # Use the head of the first atom in each configuration
                     for i in range(batch_size):
                         start_idx = ptr[i].item()
-                        config_heads[i] = data['head'][data['batch'] == i][0] if (data['batch'] == i).any() else 0
+                        config_heads[i] = (
+                            data["head"][data["batch"] == i][0]
+                            if (data["batch"] == i).any()
+                            else 0
+                        )
                 else:
-                    config_heads = data['head'].flatten()
+                    config_heads = data["head"].flatten()
             else:
-                config_heads = data['head'].flatten()
+                config_heads = data["head"].flatten()
         else:
-            config_heads = torch.zeros(preds['energy'].shape[0], dtype=torch.long, device=preds['energy'].device)
+            config_heads = torch.zeros(
+                preds["energy"].shape[0],
+                dtype=torch.long,
+                device=preds["energy"].device,
+            )
 
         # Load weight
-        if 'weight' in data:
-            config_weights = data['weight'].flatten()
+        if "weight" in data:
+            config_weights = data["weight"].flatten()
         else:
             config_weights = torch.ones_like(config_heads, dtype=torch.float)
 
@@ -677,25 +758,24 @@ class MultiheadTrainer(BaseTrainer):
         # Per-sample loss using HuberLoss (matching mp_trainer_phg)
         if self.loss_fn.get("energy_loss") is not None:
             loss["loss_e"] = self.loss_fn["energy_loss"](
-                energy_pred,
-                energy_target,
-                tag="energy",
-                num_atoms=data["num_nodes"]
+                energy_pred, energy_target, tag="energy", num_atoms=data["num_nodes"]
             )
             loss["loss"].append(e_lambda * loss["loss_e"])
 
         # Force loss - HuberLoss (matching mp_trainer_phg)
-        if "forces" in preds and self.loss_fn.get('force_loss') is not None:
+        if "forces" in preds and self.loss_fn.get("force_loss") is not None:
             force_target = data["forces"].flatten()
             force_pred = preds["forces"].flatten()
             loss["loss_f"] = self.loss_fn["force_loss"](
-                force_pred,
-                force_target,
-                tag="forces"
+                force_pred, force_target, tag="forces"
             )
             loss["loss"].append(f_lambda * loss["loss_f"])
 
-        if "stress" in preds and preds["stress"] is not None and self.loss_fn.get('stress_loss') is not None:
+        if (
+            "stress" in preds
+            and preds["stress"] is not None
+            and self.loss_fn.get("stress_loss") is not None
+        ):
             stress_target = data.get("stress")
             if stress_target is not None:
                 stress_pred = preds["stress"].reshape(-1, 6)
@@ -703,21 +783,27 @@ class MultiheadTrainer(BaseTrainer):
                 stress_valid = data.get("stress_valid")
                 if stress_valid is None:
                     raise KeyError("stress_valid is required for stress loss")
-                if not isinstance(stress_valid, torch.Tensor) or stress_valid.dtype != torch.bool:
+                if (
+                    not isinstance(stress_valid, torch.Tensor)
+                    or stress_valid.dtype != torch.bool
+                ):
                     raise TypeError("stress_valid must be a torch.bool tensor")
-                if stress_valid.ndim != 1 or stress_valid.numel() != stress_pred.shape[0]:
+                if (
+                    stress_valid.ndim != 1
+                    or stress_valid.numel() != stress_pred.shape[0]
+                ):
                     raise ValueError(
                         "stress_valid must have one bool value per stress configuration"
                     )
                 if stress_pred.shape != stress_target.shape:
-                    raise ValueError("stress and stress target must have matching [-1, 6] shapes")
+                    raise ValueError(
+                        "stress and stress target must have matching [-1, 6] shapes"
+                    )
                 if stress_valid.any():
                     valid_stress_pred = stress_pred[stress_valid].reshape(-1)
                     valid_stress_target = stress_target[stress_valid].reshape(-1)
                     loss["loss_s"] = self.loss_fn["stress_loss"](
-                        valid_stress_pred,
-                        valid_stress_target,
-                        tag="stress"
+                        valid_stress_pred, valid_stress_target, tag="stress"
                     )
                 else:
                     loss["loss_s"] = stress_pred[stress_valid].sum()
@@ -737,33 +823,34 @@ class MultiheadTrainer(BaseTrainer):
         unique_heads = torch.unique(config_heads)
         for head_val in unique_heads:
             head_idx = int(head_val.item())
-            head_mask = (config_heads == head_idx)
+            head_mask = config_heads == head_idx
             if head_mask.any():
                 # Per-atom normalized energy loss for monitoring
                 head_energy_diff = energy_pred[head_mask] - energy_target[head_mask]
                 # Get num_atoms for this head's samples
-                ptr = data.get('ptr')
+                ptr = data.get("ptr")
                 if ptr is not None:
                     num_atoms_per_config = ptr[1:] - ptr[:-1]
                     head_num_atoms = num_atoms_per_config[head_mask]
                     head_energy_loss = ((head_energy_diff / head_num_atoms) ** 2).mean()
                 else:
-                    head_energy_loss = (head_energy_diff ** 2).mean()
+                    head_energy_loss = (head_energy_diff**2).mean()
 
-                head_loss_dict = {
-                    "loss_e": head_energy_loss.detach()
-                }
+                head_loss_dict = {"loss_e": head_energy_loss.detach()}
 
                 # Compute force loss for each head
                 head_force_loss = None
-                if "forces" in preds and self.loss_fn.get('force_loss') is not None:
-                    if 'batch' in data:
-                        batch_indices = data['batch']
+                if "forces" in preds and self.loss_fn.get("force_loss") is not None:
+                    if "batch" in data:
+                        batch_indices = data["batch"]
                         # Identify atoms belonging to the corresponding head
                         atom_head_mask = head_mask[batch_indices]
                         if atom_head_mask.any():
-                            force_diff = preds["forces"][atom_head_mask] - data["forces"][atom_head_mask]
-                            head_force_loss = (force_diff ** 2).sum(dim=-1).mean()
+                            force_diff = (
+                                preds["forces"][atom_head_mask]
+                                - data["forces"][atom_head_mask]
+                            )
+                            head_force_loss = (force_diff**2).sum(dim=-1).mean()
                             head_loss_dict["loss_f"] = head_force_loss.detach()
 
                 # Compute total loss per head (energy + force)
@@ -777,19 +864,20 @@ class MultiheadTrainer(BaseTrainer):
         return loss
 
     def scale_shift(self, preds, data, mode):
-        """Override: apply scale_shift per head (GitHub BaseTrainer compatible).
-        """
+        """Override: apply scale_shift per head (GitHub BaseTrainer compatible)."""
         energy_target = data["energy"].flatten()
         energy_predict = preds["energy"].flatten()
 
         # Get the corresponding head per configuration
-        if 'config_head' in data:
-            config_heads = data['config_head'].flatten()
+        if "config_head" in data:
+            config_heads = data["config_head"].flatten()
         else:
-            ptr = data.get('ptr')
+            ptr = data.get("ptr")
             if ptr is not None and ptr.numel() > 1:
                 batch_size = ptr.numel() - 1
-                config_heads = torch.zeros(batch_size, dtype=torch.long, device=energy_target.device)
+                config_heads = torch.zeros(
+                    batch_size, dtype=torch.long, device=energy_target.device
+                )
             else:
                 config_heads = torch.zeros_like(energy_target, dtype=torch.long)
 
@@ -797,7 +885,7 @@ class MultiheadTrainer(BaseTrainer):
 
         for head_val in unique_heads:
             head_idx = int(head_val.item())
-            head_mask = (config_heads == head_idx)
+            head_mask = config_heads == head_idx
 
             if not head_mask.any():
                 continue
@@ -810,16 +898,18 @@ class MultiheadTrainer(BaseTrainer):
             preds["energy"][head_mask] = head_predict + shift_enr
 
             # Record scale_shift per-head
-            if mode == 'train':
-                self.ckpt['train_scale_shift'].append(shift_enr.detach().cpu())
+            if mode == "train":
+                self.ckpt["train_scale_shift"].append(shift_enr.detach().cpu())
                 # Per-head tracking
-                if 'per_head_scale_shift' not in self.ckpt:
-                    self.ckpt['per_head_scale_shift'] = {}
-                if head_idx not in self.ckpt['per_head_scale_shift']:
-                    self.ckpt['per_head_scale_shift'][head_idx] = []
-                self.ckpt['per_head_scale_shift'][head_idx].append(shift_enr.detach().cpu().item())
-            elif mode == 'valid':
-                self.ckpt['valid_scale_shift'].append(shift_enr.detach().cpu())
+                if "per_head_scale_shift" not in self.ckpt:
+                    self.ckpt["per_head_scale_shift"] = {}
+                if head_idx not in self.ckpt["per_head_scale_shift"]:
+                    self.ckpt["per_head_scale_shift"][head_idx] = []
+                self.ckpt["per_head_scale_shift"][head_idx].append(
+                    shift_enr.detach().cpu().item()
+                )
+            elif mode == "valid":
+                self.ckpt["valid_scale_shift"].append(shift_enr.detach().cpu())
 
         return preds
 
@@ -836,7 +926,7 @@ class MultiheadTrainer(BaseTrainer):
         self.initial_test()
 
         # Create checkpoints directory (following BAM-JAX pattern)
-        self._ckpt_dir = 'checkpoints'
+        self._ckpt_dir = "checkpoints"
         self._best_ckpt_path = None
         self._latest_ckpt_path = None
         if self.rank == 0:
@@ -851,16 +941,19 @@ class MultiheadTrainer(BaseTrainer):
             self.logger.print_logger_head()
 
         # Main training loop
-        nepoch = self.json_data['NN']['nepoch']
+        nepoch = self.json_data["NN"]["nepoch"]
 
         for epoch in range(nepoch):
             # Check emergency stop request
             if self._emergency_requested:
                 if self.rank == 0:
-                    print("\n[Emergency] Signal received — saving emergency checkpoint and exiting.")
+                    print(
+                        "\n[Emergency] Signal received — saving emergency checkpoint and exiting."
+                    )
                     ckpt = self._build_current_checkpoint(
-                        max(epoch - 1, 0), {}, {'loss': self.loss_test_min})
-                    emergency_path = os.path.join(self._ckpt_dir, 'ckpt_emergency.pkl')
+                        max(epoch - 1, 0), {}, {"loss": self.loss_test_min}
+                    )
+                    emergency_path = os.path.join(self._ckpt_dir, "ckpt_emergency.pkl")
                     torch.save(ckpt, emergency_path)
                     print(f"  Emergency checkpoint saved: {emergency_path}")
                 break
@@ -873,18 +966,24 @@ class MultiheadTrainer(BaseTrainer):
                 pass
 
             # Train (JAX-style per-head gradient accumulation)
-            epoch_loss_train = self.train_one_epoch(mode='train', epoch=epoch+self.start_epoch)
+            epoch_loss_train = self.train_one_epoch(
+                mode="train", epoch=epoch + self.start_epoch
+            )
 
             if self.ddp:
                 torch.distributed.barrier()
 
-            if (epoch+1) % self.log_interval == 0:
+            if (epoch + 1) % self.log_interval == 0:
                 # Evaluate with EMA-averaged parameters (JAX-style per-head validation)
                 param_context = (
-                    self.ema.average_parameters() if self.ema is not None else nullcontext()
+                    self.ema.average_parameters()
+                    if self.ema is not None
+                    else nullcontext()
                 )
                 with param_context:
-                    epoch_loss_valid = self.validate_per_head(epoch=epoch+self.start_epoch)
+                    epoch_loss_valid = self.validate_per_head(
+                        epoch=epoch + self.start_epoch
+                    )
 
                     if self.ddp:
                         torch.distributed.barrier()
@@ -894,16 +993,18 @@ class MultiheadTrainer(BaseTrainer):
                     actual_epoch = epoch + 1 + self.start_epoch
 
                     # Save best checkpoint if validation loss improved
-                    if epoch_loss_valid['loss'] < self.loss_test_min:
-                        self.update_check_point(epoch, epoch_loss_train, epoch_loss_valid)
-                        self.loss_test_min = epoch_loss_valid['loss']
-                        self._save_named_checkpoint(self.ckpt, 'best', actual_epoch)
+                    if epoch_loss_valid["loss"] < self.loss_test_min:
+                        self.update_check_point(
+                            epoch, epoch_loss_train, epoch_loss_valid
+                        )
+                        self.loss_test_min = epoch_loss_valid["loss"]
+                        self._save_named_checkpoint(self.ckpt, "best", actual_epoch)
 
                     # Always save latest checkpoint
                     latest_ckpt = self._build_current_checkpoint(
                         epoch, epoch_loss_train, epoch_loss_valid
                     )
-                    self._save_named_checkpoint(latest_ckpt, 'latest', actual_epoch)
+                    self._save_named_checkpoint(latest_ckpt, "latest", actual_epoch)
 
                     # Print epoch loss
                     self.print_logger(epoch, epoch_loss_train, epoch_loss_valid)
@@ -915,9 +1016,11 @@ class MultiheadTrainer(BaseTrainer):
                 # Update scheduler (learning rate)
                 metrics = None
                 scheduler_cfg = self.json_data.get("scheduler", {})
-                if isinstance(scheduler_cfg, dict) \
-                        and scheduler_cfg.get("scheduler") == "ReduceLROnPlateau":
-                    metrics = epoch_loss_valid['loss']
+                if (
+                    isinstance(scheduler_cfg, dict)
+                    and scheduler_cfg.get("scheduler") == "ReduceLROnPlateau"
+                ):
+                    metrics = epoch_loss_valid["loss"]
                 self.scheduler.step(metrics, epoch)
 
     # ------------------------------------------------------------------
@@ -925,10 +1028,13 @@ class MultiheadTrainer(BaseTrainer):
     # ------------------------------------------------------------------
     def _register_emergency_handler(self):
         """Register SIGTERM/SIGINT handlers for emergency checkpoint saving."""
+
         def _handler(signum, frame):
             sig_name = signal.Signals(signum).name
             if self.rank == 0:
-                print(f"\n[Emergency] Received {sig_name} — will save checkpoint at next epoch boundary.")
+                print(
+                    f"\n[Emergency] Received {sig_name} — will save checkpoint at next epoch boundary."
+                )
             self._emergency_requested = True
 
         signal.signal(signal.SIGTERM, _handler)
@@ -944,26 +1050,26 @@ class MultiheadTrainer(BaseTrainer):
             ema_state = self.ema.state_dict()
 
         ckpt = {
-            'loss': {
-                'epoch': epoch + 1 + self.start_epoch,
-                'train': epoch_loss_train.get('loss', float('nan')),
-                'valid': epoch_loss_valid.get('loss', float('nan')),
+            "loss": {
+                "epoch": epoch + 1 + self.start_epoch,
+                "train": epoch_loss_train.get("loss", float("nan")),
+                "valid": epoch_loss_valid.get("loss", float("nan")),
             },
-            'params': state_dict,
-            'opt_state': self.optimizer.state_dict(),
-            'scheduler': self.scheduler.state_dict(),
-            'uniq_element': self.ckpt.get('uniq_element'),
-            'enr_avg_per_element': self.ckpt.get('enr_avg_per_element'),
-            'input.json': self.json_data,
-            'train_scale_shift': self.ckpt.get('train_scale_shift', []),
-            'valid_scale_shift': self.ckpt.get('valid_scale_shift', []),
-            'valid_scale_shift_origin': self.ckpt.get('valid_scale_shift_origin', []),
-            'ema_state': ema_state,
+            "params": state_dict,
+            "opt_state": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
+            "uniq_element": self.ckpt.get("uniq_element"),
+            "enr_avg_per_element": self.ckpt.get("enr_avg_per_element"),
+            "input.json": self.json_data,
+            "train_scale_shift": self.ckpt.get("train_scale_shift", []),
+            "valid_scale_shift": self.ckpt.get("valid_scale_shift", []),
+            "valid_scale_shift_origin": self.ckpt.get("valid_scale_shift_origin", []),
+            "ema_state": ema_state,
         }
-        if hasattr(self, 'per_head_enr_avg'):
-            ckpt['per_head_enr_avg'] = self.per_head_enr_avg
-        if 'per_head_scale_shift' in self.ckpt:
-            ckpt['per_head_scale_shift'] = self.ckpt['per_head_scale_shift']
+        if hasattr(self, "per_head_enr_avg"):
+            ckpt["per_head_enr_avg"] = self.per_head_enr_avg
+        if "per_head_scale_shift" in self.ckpt:
+            ckpt["per_head_scale_shift"] = self.ckpt["per_head_scale_shift"]
         return ckpt
 
     def _save_named_checkpoint(self, ckpt_data, tag, epoch):
@@ -974,22 +1080,24 @@ class MultiheadTrainer(BaseTrainer):
             tag: 'best' or 'latest'
             epoch: epoch number (appended as _epoch_NN)
         """
-        attr = f'_{tag}_ckpt_path'
+        attr = f"_{tag}_ckpt_path"
         old_path = getattr(self, attr, None)
         if old_path and os.path.exists(old_path):
             os.remove(old_path)
 
-        fname = os.path.join(self._ckpt_dir, f'ckpt_{tag}_epoch_{epoch:02d}.pkl')
+        fname = os.path.join(self._ckpt_dir, f"ckpt_{tag}_epoch_{epoch:02d}.pkl")
         torch.save(ckpt_data, fname)
         setattr(self, attr, fname)
 
-        if tag == 'best':
-            val_loss = ckpt_data['loss']['valid']
+        if tag == "best":
+            val_loss = ckpt_data["loss"]["valid"]
             if isinstance(val_loss, torch.Tensor):
                 val_loss = val_loss.item()
-            print(f'  *** New best checkpoint saved: {fname} (val_loss: {val_loss:.6f}) ***')
+            print(
+                f"  *** New best checkpoint saved: {fname} (val_loss: {val_loss:.6f}) ***"
+            )
         else:
-            print(f'  Latest checkpoint saved: {fname}')
+            print(f"  Latest checkpoint saved: {fname}")
 
     # Initial_test: use BaseTrainer as-is (pass the epoch argument to train_one_epoch)
     def initial_test(self):
@@ -998,21 +1106,20 @@ class MultiheadTrainer(BaseTrainer):
             self.ema.average_parameters() if self.ema is not None else nullcontext()
         )
         with param_context:
-            epoch_loss_test = self.train_one_epoch(mode='test', epoch=0)
+            epoch_loss_test = self.train_one_epoch(mode="test", epoch=0)
             if self.ddp:
                 torch.distributed.barrier()
-            self.loss_test_min = epoch_loss_test['loss']
+            self.loss_test_min = epoch_loss_test["loss"]
 
     # Update_check_point: additionally save the EMA state
     def update_check_point(self, epoch, epoch_loss_train, epoch_loss_valid):
-        """Update checkpoint with current training state (+ EMA state + per-head E0s).
-        """
+        """Update checkpoint with current training state (+ EMA state + per-head E0s)."""
         super().update_check_point(epoch, epoch_loss_train, epoch_loss_valid)
         # Store per-head E0s (used during evaluation)
-        if hasattr(self, 'per_head_enr_avg'):
-            self.ckpt['per_head_enr_avg'] = self.per_head_enr_avg
+        if hasattr(self, "per_head_enr_avg"):
+            self.ckpt["per_head_enr_avg"] = self.per_head_enr_avg
 
-    def train_one_epoch(self, mode='train', data_loader=None, epoch=0):
+    def train_one_epoch(self, mode="train", data_loader=None, epoch=0):
         """Train/validate one epoch — JAX-style per-head processing.
 
         Training mode:
@@ -1024,7 +1131,7 @@ class MultiheadTrainer(BaseTrainer):
             Falls back to mixed-loader evaluation for initial_test compatibility.
             Per-head validation is handled separately by validate_per_head().
         """
-        if mode == 'train':
+        if mode == "train":
             return self._train_one_epoch_perhead(epoch)
         else:
             return self._eval_one_epoch_mixed(mode, data_loader, epoch)
@@ -1035,20 +1142,30 @@ class MultiheadTrainer(BaseTrainer):
     def _train_one_epoch_perhead(self, epoch):
         """Per-head gradient computation and weighted accumulation (JAX pattern)."""
         self.model.train()
-        self.ckpt['train_scale_shift'] = []
-        loss_log_config = self.log_config['train']
-        grad_clip = self.json_data.get('NN', {}).get('grad_clip', 1.0)
+        self.ckpt["train_scale_shift"] = []
+        loss_log_config = self.log_config["train"]
+        grad_clip = self.json_data.get("NN", {}).get("grad_clip", 1.0)
 
         # Per-head iterators (JAX HeadBatchStream equivalent)
-        head_iters = {h: iter(loader) for h, loader in self.per_head_train_loaders.items()}
-        steps_per_epoch = max(len(loader) for loader in self.per_head_train_loaders.values())
+        head_iters = {
+            h: iter(loader) for h, loader in self.per_head_train_loaders.items()
+        }
+        steps_per_epoch = max(
+            len(loader) for loader in self.per_head_train_loaders.values()
+        )
 
         # Accumulators
-        epoch_loss_dict = {key: [] for key in loss_log_config if not key.startswith('head_')}
-        head_loss_accum = {h: {'loss': [], 'loss_e': [], 'loss_f': []} for h in range(self.num_heads)}
+        epoch_loss_dict = {
+            key: [] for key in loss_log_config if not key.startswith("head_")
+        }
+        head_loss_accum = {
+            h: {"loss": [], "loss_e": [], "loss_f": []} for h in range(self.num_heads)
+        }
 
         if self.rank == 0 and tqdm is not None:
-            step_iter = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch} [train]", leave=True)
+            step_iter = tqdm(
+                range(steps_per_epoch), desc=f"Epoch {epoch} [train]", leave=True
+            )
         else:
             step_iter = range(steps_per_epoch)
 
@@ -1073,20 +1190,20 @@ class MultiheadTrainer(BaseTrainer):
                     data = next(head_iters[head_idx])
 
                 data = self.move_to_device(data, self.device)
-                self._log_batch_size('train', step, data, epoch)
+                self._log_batch_size("train", step, data, epoch)
 
                 # Forward
                 preds = self.model(data, True)
-                preds = self.scale_shift(preds, data, 'train')
+                preds = self.scale_shift(preds, data, "train")
                 loss_dict = self.compute_loss(preds, data)
 
                 # Weighted backward: scale loss by head's grad_weight before backward
                 head_weight = self.loss_weights[head_idx]
-                scaled_loss = loss_dict['loss'] * head_weight
+                scaled_loss = loss_dict["loss"] * head_weight
                 scaled_loss.backward()  # gradients accumulate across heads
 
                 total_weight += head_weight
-                step_loss_sum += loss_dict['loss'].detach().item() * head_weight
+                step_loss_sum += loss_dict["loss"].detach().item() * head_weight
                 per_head_loss_dicts[head_idx] = loss_dict
 
             # --- Normalize accumulated gradients by total weight (JAX pattern) ---
@@ -1106,12 +1223,16 @@ class MultiheadTrainer(BaseTrainer):
             # --- Logging ---
             weighted_loss = step_loss_sum / total_weight if total_weight > 0 else 0.0
 
-            if self.rank == 0 and tqdm is not None and hasattr(step_iter, 'set_postfix'):
-                step_iter.set_postfix({'loss': f"{weighted_loss:.4f}"})
+            if (
+                self.rank == 0
+                and tqdm is not None
+                and hasattr(step_iter, "set_postfix")
+            ):
+                step_iter.set_postfix({"loss": f"{weighted_loss:.4f}"})
 
             # Aggregate step-level losses
             for l in loss_log_config:
-                if l.startswith('head_'):
+                if l.startswith("head_"):
                     continue
                 # Combine from all heads (weighted mean)
                 vals = []
@@ -1125,9 +1246,9 @@ class MultiheadTrainer(BaseTrainer):
 
             # Per-head loss tracking
             for head_idx, ld in per_head_loss_dicts.items():
-                if 'head_losses' in ld and head_idx in ld['head_losses']:
-                    hl = ld['head_losses'][head_idx]
-                    for key in ('loss', 'loss_e', 'loss_f'):
+                if "head_losses" in ld and head_idx in ld["head_losses"]:
+                    hl = ld["head_losses"][head_idx]
+                    for key in ("loss", "loss_e", "loss_f"):
                         if key in hl:
                             head_loss_accum[head_idx][key].append(hl[key].cpu())
 
@@ -1148,11 +1269,15 @@ class MultiheadTrainer(BaseTrainer):
             total_val_loss: weighted total validation loss (scalar)
         """
         self.model.eval()
-        self.ckpt['valid_scale_shift'] = []
-        loss_log_config = self.log_config['valid']
+        self.ckpt["valid_scale_shift"] = []
+        loss_log_config = self.log_config["valid"]
 
-        epoch_loss_dict = {key: [] for key in loss_log_config if not key.startswith('head_')}
-        head_loss_accum = {h: {'loss': [], 'loss_e': [], 'loss_f': []} for h in range(self.num_heads)}
+        epoch_loss_dict = {
+            key: [] for key in loss_log_config if not key.startswith("head_")
+        }
+        head_loss_accum = {
+            h: {"loss": [], "loss_e": [], "loss_f": []} for h in range(self.num_heads)
+        }
 
         total_val_loss = 0.0
         total_weight = 0.0
@@ -1168,19 +1293,19 @@ class MultiheadTrainer(BaseTrainer):
                     break
 
                 data = self.move_to_device(data, self.device)
-                self._log_batch_size('valid', batch_idx, data, epoch)
+                self._log_batch_size("valid", batch_idx, data, epoch)
 
                 # no_grad() disabled: autograd.grad() needs a live graph for force computation
                 preds = self.model(data, False)
-                preds = self.scale_shift(preds, data, 'valid')
+                preds = self.scale_shift(preds, data, "valid")
                 loss_dict = self.compute_loss(preds, data)
 
-                head_total_loss += loss_dict['loss'].detach().item()
+                head_total_loss += loss_dict["loss"].detach().item()
                 n_batches += 1
 
                 # Aggregate non-head losses
                 for l in loss_log_config:
-                    if l.startswith('head_'):
+                    if l.startswith("head_"):
                         continue
                     v = loss_dict.get(l)
                     if v is not None:
@@ -1188,9 +1313,9 @@ class MultiheadTrainer(BaseTrainer):
                         epoch_loss_dict[l].append(v * head_weight)
 
                 # Per-head loss tracking
-                if 'head_losses' in loss_dict and head_idx in loss_dict['head_losses']:
-                    hl = loss_dict['head_losses'][head_idx]
-                    for key in ('loss', 'loss_e', 'loss_f'):
+                if "head_losses" in loss_dict and head_idx in loss_dict["head_losses"]:
+                    hl = loss_dict["head_losses"][head_idx]
+                    for key in ("loss", "loss_e", "loss_f"):
                         if key in hl:
                             head_loss_accum[head_idx][key].append(hl[key].cpu())
 
@@ -1200,16 +1325,20 @@ class MultiheadTrainer(BaseTrainer):
                 total_val_loss += avg_head_loss * head_weight
                 total_weight += head_weight
                 if self.rank == 0:
-                    print(f"  [Valid] Head {head_idx} ({head_name}): "
-                          f"loss={avg_head_loss:.6f}, weight={head_weight}")
+                    print(
+                        f"  [Valid] Head {head_idx} ({head_name}): "
+                        f"loss={avg_head_loss:.6f}, weight={head_weight}"
+                    )
 
         # Normalize total validation loss
         if total_weight > 0:
             total_val_loss /= total_weight
 
         torch.cuda.synchronize()
-        result = self._aggregate_epoch_losses(epoch_loss_dict, head_loss_accum, total_weight)
-        result['loss'] = torch.tensor(total_val_loss)
+        result = self._aggregate_epoch_losses(
+            epoch_loss_dict, head_loss_accum, total_weight
+        )
+        result["loss"] = torch.tensor(total_val_loss)
         return result
 
     # ------------------------------------------------------------------
@@ -1218,14 +1347,18 @@ class MultiheadTrainer(BaseTrainer):
     def _eval_one_epoch_mixed(self, mode, data_loader, epoch):
         """Evaluate on mixed data loader (used by initial_test)."""
         self.model.eval()
-        loss_log_config = self.log_config['valid']
+        loss_log_config = self.log_config["valid"]
         if data_loader is None:
             data_loader = self.valid_loader
-        if mode == 'valid':
-            self.ckpt['valid_scale_shift'] = []
+        if mode == "valid":
+            self.ckpt["valid_scale_shift"] = []
 
-        epoch_loss_dict = {key: [] for key in loss_log_config if not key.startswith('head_')}
-        head_loss_accum = {h: {'loss': [], 'loss_e': [], 'loss_f': []} for h in range(self.num_heads)}
+        epoch_loss_dict = {
+            key: [] for key in loss_log_config if not key.startswith("head_")
+        }
+        head_loss_accum = {
+            h: {"loss": [], "loss_e": [], "loss_f": []} for h in range(self.num_heads)
+        }
 
         for batch_idx, data in enumerate(data_loader):
             if self.smoke_enabled and batch_idx >= self.smoke_max_batches:
@@ -1236,14 +1369,16 @@ class MultiheadTrainer(BaseTrainer):
             loss_dict = self.compute_loss(preds, data)
 
             for l in loss_log_config:
-                if l.startswith('head_'):
+                if l.startswith("head_"):
                     continue
                 val = loss_dict.get(l, torch.nan)
-                epoch_loss_dict[l].append(val.detach().cpu() if isinstance(val, torch.Tensor) else val)
-            if 'head_losses' in loss_dict:
-                for head_idx, hl in loss_dict['head_losses'].items():
+                epoch_loss_dict[l].append(
+                    val.detach().cpu() if isinstance(val, torch.Tensor) else val
+                )
+            if "head_losses" in loss_dict:
+                for head_idx, hl in loss_dict["head_losses"].items():
                     if head_idx < self.num_heads:
-                        for key in ('loss', 'loss_e', 'loss_f'):
+                        for key in ("loss", "loss_e", "loss_f"):
                             if key in hl:
                                 head_loss_accum[head_idx][key].append(hl[key].cpu())
 
@@ -1253,24 +1388,29 @@ class MultiheadTrainer(BaseTrainer):
     # ------------------------------------------------------------------
     # Helper: aggregate epoch losses
     # ------------------------------------------------------------------
-    def _aggregate_epoch_losses(self, epoch_loss_dict, head_loss_accum, total_weight=None):
+    def _aggregate_epoch_losses(
+        self, epoch_loss_dict, head_loss_accum, total_weight=None
+    ):
         """Average accumulated per-step losses into epoch-level metrics."""
         if total_weight and total_weight > 0:
             result = {
                 key: torch.mean(torch.tensor(value)) / total_weight
-                if value else torch.tensor(float('nan'))
+                if value
+                else torch.tensor(float("nan"))
                 for key, value in epoch_loss_dict.items()
             }
         else:
             result = {
-                key: torch.mean(torch.tensor(value)) if value else torch.tensor(float('nan'))
+                key: torch.mean(torch.tensor(value))
+                if value
+                else torch.tensor(float("nan"))
                 for key, value in epoch_loss_dict.items()
             }
 
         for head_idx in range(self.num_heads):
-            for key in ('loss', 'loss_e', 'loss_f'):
+            for key in ("loss", "loss_e", "loss_f"):
                 vals = head_loss_accum[head_idx][key]
                 if vals:
-                    result[f'head_{head_idx}_{key}'] = torch.mean(torch.tensor(vals))
+                    result[f"head_{head_idx}_{key}"] = torch.mean(torch.tensor(vals))
 
         return result

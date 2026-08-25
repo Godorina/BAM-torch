@@ -1,25 +1,31 @@
 """
-FAENet: Frame Averaging Equivariant graph neural Network 
+FAENet: Frame Averaging Equivariant graph neural Network
 Simple, scalable and expressive model for property prediction on 3D atomic systems.
 """
+
+from collections.abc import Callable
+
 import torch
 from torch import nn
 from torch.nn import Linear
 
-from typing import Dict, Optional, Union
-
-from .blocks import(
-    GaussianSmearing,
-    EmbeddingBlock,
-    InteractionBlock,
-    OutputBlock,
-    ForceDecoder
+# FAENet accepts `preprocess` as a string (default "pbc_preprocess") and resolves
+# it with eval() against this module's globals, so base_preprocess and
+# pbc_preprocess are used dynamically. Removing them as "unused" breaks that
+# lookup, hence the explicit noqa markers.
+from bam_torch.group_averaging.utils.ga_utils import (
+    base_preprocess,  # noqa: F401
+    pbc_preprocess,  # noqa: F401
+    swish,
 )
 from bam_torch.model.blocks import RadialEmbeddingBlock
-from bam_torch.group_averaging.utils.ga_utils import (
-    swish, 
-    pbc_preprocess, 
-    base_preprocess
+
+from .blocks import (
+    EmbeddingBlock,
+    ForceDecoder,
+    GaussianSmearing,
+    InteractionBlock,
+    OutputBlock,
 )
 
 
@@ -86,28 +92,28 @@ class FAENet(nn.Module):
     def __init__(
         self,
         cutoff: float = 6.0,
-        preprocess: Union[str, callable] = "pbc_preprocess",
+        preprocess: str | Callable = "pbc_preprocess",
         act: str = "swish",
         max_num_neighbors: int = 40,
         hidden_channels: int = 128,
-        tag_hidden_channels: int = 0, # QM9: 0
+        tag_hidden_channels: int = 0,  # QM9: 0
         pg_hidden_channels: int = 32,  # QM9: 32
-        phys_embeds: bool = False, # QM9: False
+        phys_embeds: bool = False,  # QM9: False
         phys_hidden_channels: int = 0,
         num_interactions: int = 4,
         num_gaussians: int = 50,
         num_filters: int = 128,
         second_layer_MLP: bool = True,  # QM9: True
-        skip_co: bool = False, # QM9: False
-        mp_type: str = "updownscale_base", # QM9: "updownscale_base"
+        skip_co: bool = False,  # QM9: False
+        mp_type: str = "updownscale_base",  # QM9: "updownscale_base"
         graph_norm: bool = True,
         complex_mp: bool = False,
-        energy_head: Optional[str] = None,
+        energy_head: str | None = None,
         out_dim: int = 1,
         pred_as_dict: bool = True,
-        regress_forces: Optional[str] = None,
-        force_decoder_type: Optional[str] = "mlp",
-        force_decoder_model_config: Optional[dict] = {"hidden_channels": 128},
+        regress_forces: str | None = None,
+        force_decoder_type: str | None = "mlp",
+        force_decoder_model_config: dict | None = {"hidden_channels": 128},
     ):
         super().__init__()
 
@@ -161,11 +167,11 @@ class FAENet(nn.Module):
         self.distance_expansion = GaussianSmearing(0.0, self.cutoff, self.num_gaussians)
 
         # Radial basis based on "Soft envelope * bessel function"
-        
+
         self.radial_embedding = RadialEmbeddingBlock(
             r_max=1.0,
             num_bessel=self.num_gaussians,
-            num_polynomial_cutoff=6,   # default of BAM-jax
+            num_polynomial_cutoff=6,  # default of BAM-jax
             radial_type="bessel",
             distance_transform=None,
         )
@@ -274,16 +280,16 @@ class FAENet(nn.Module):
                 if mode == "train":
                     # Store the energy gradient as target for "direct_with_gradient_target"
                     # Use it as a metric only in "direct" mode.
-                    preds["forces_grad_target"] = grad_forces#.detach()
+                    preds["forces_grad_target"] = grad_forces  # .detach()
             else:
                 raise ValueError(
                     f"Unknown forces regression mode {self.regress_forces}"
                 )
         if not self.pred_as_dict:
             return preds["energy"]
-        #print(f'ture_forces: \n{data.forces}')
-        #print(f'preds["forces"] : \n{preds["forces"]}')
-        #print(f'preds["forces_grad_target"] : \n{preds["forces_grad_target"]}')
+        # print(f'ture_forces: \n{data.forces}')
+        # print(f'preds["forces"] : \n{preds["forces"]}')
+        # print(f'preds["forces_grad_target"] : \n{preds["forces_grad_target"]}')
         return preds
 
     def energy_forward(self, data, preproc=True):
@@ -302,10 +308,14 @@ class FAENet(nn.Module):
         # Should output all necessary attributes, in correct format.
         if preproc:
             z, batch, edge_index, rel_pos, edge_weight = self.preprocess(
-                data, self.cutoff, self.max_num_neighbors,
+                data,
+                self.cutoff,
+                self.max_num_neighbors,
             )
         else:
-            rel_pos = data.positions[data.edge_index[0]] - data.positions[data.edge_index[1]]
+            rel_pos = (
+                data.positions[data.edge_index[0]] - data.positions[data.edge_index[1]]
+            )
             z, batch, edge_index, rel_pos, edge_weight = (
                 data.species.long(),
                 data.batch,
@@ -313,20 +323,20 @@ class FAENet(nn.Module):
                 rel_pos,
                 rel_pos.norm(dim=-1),
             )
-        #torch.set_printoptions(profile="full")
-        #rel_pos = data.rel_pos.view(-1, 3)
-        #distances = torch.linalg.vector_norm(rel_pos, dim=-1)
-        #nonzero_idx = torch.arange(len(distances), device=distances.device)[distances != 0]
-        #edge_weight = distances[nonzero_idx]
-        #rel_pos = rel_pos[nonzero_idx]
+        # torch.set_printoptions(profile="full")
+        # rel_pos = data.rel_pos.view(-1, 3)
+        # distances = torch.linalg.vector_norm(rel_pos, dim=-1)
+        # nonzero_idx = torch.arange(len(distances), device=distances.device)[distances != 0]
+        # edge_weight = distances[nonzero_idx]
+        # rel_pos = rel_pos[nonzero_idx]
         edge_attr = self.distance_expansion(edge_weight)  # RBF of pairwise distances
-        #print("edge_attr ", edge_attr)
+        # print("edge_attr ", edge_attr)
         """
         rel_pos = rel_pos / self.cutoff
         lengths = torch.norm(rel_pos, dim=1) # edge_weight == distances
         edge_attr = self.radial_embedding(lengths.unsqueeze(1))
         """
-        #assert z.dim() == 1 and z.dtype == torch.long
+        # assert z.dim() == 1 and z.dtype == torch.long
 
         # Embedding block
         h, e = self.embed_block(
@@ -348,7 +358,7 @@ class FAENet(nn.Module):
                 energy_skip_co.append(
                     self.output_block(h, edge_index, edge_weight, batch, alpha)
                 )
-            #edge_mask = data.edge_mask
+            # edge_mask = data.edge_mask
             edge_mask = None
 
             h = h + interaction(h, edge_index, e, edge_mask)
@@ -358,9 +368,11 @@ class FAENet(nn.Module):
             energy_skip_co.append(h)
             h = self.act(self.mlp_skip_co(torch.cat(energy_skip_co, dim=1)))
 
-        energy, node_energy = self.output_block(h, edge_index, edge_weight, batch, alpha)
+        energy, node_energy = self.output_block(
+            h, edge_index, edge_weight, batch, alpha
+        )
 
-        # Skip-connection   
+        # Skip-connection
         energy_skip_co.append(energy)
         if self.skip_co == "concat":
             energy = self.mlp_skip_co(torch.cat(energy_skip_co, dim=1))
@@ -397,13 +409,16 @@ class FAENet(nn.Module):
         Returns:
             (tensor): forces as the energy gradient w.r.t. atom positions
         """
-        return -1 * (
-            torch.autograd.grad(
-                energy,
-                pos,
-                grad_outputs=torch.ones_like(energy),
-                create_graph=True,
-            )[0]
+        return (
+            -1
+            * (
+                torch.autograd.grad(
+                    energy,
+                    pos,
+                    grad_outputs=torch.ones_like(energy),
+                    create_graph=True,
+                )[0]
+            )
         )
 
     def reset_parameters(self):
@@ -422,4 +437,3 @@ class FAENet(nn.Module):
     @property
     def num_params(self):
         return sum(p.numel() for p in self.parameters())
-

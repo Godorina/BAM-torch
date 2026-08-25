@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from importlib.util import find_spec
 from math import log, pi, sqrt
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
 import torchmetrics
 import tqdm
-from torch import nn
-from torch.linalg import LinAlgError
-from torch.nn.utils import parameters_to_vector, vector_to_parameters
-from torch.utils.data import DataLoader
-
 from laplace.curvature.asdfghjkl import AsdfghjklHessian
 from laplace.curvature.asdl import AsdlGGN
 from laplace.curvature.backpack import BackPackGGN
@@ -34,11 +29,14 @@ from laplace.utils.utils import (
     normal_samples,
     validate,
 )
+from torch import nn
+from torch.linalg import LinAlgError
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
+from torch.utils.data import DataLoader
+from torch_geometric.data import Batch, Data
 
 from .bam_curvature import CurvatureInterface
 from .bam_curvlinops import CurvlinopsEF, CurvlinopsGGN
-
-from torch_geometric.data import Data, Batch
 
 __all__ = [
     "BaseLaplace",
@@ -905,10 +903,10 @@ class ParametricLaplace(BaseLaplace):
                 try:
                     out = self.model(X[:1].to(self._device))
                 except (TypeError, AttributeError):
-                    #out = self.model(X.to(self._device))
+                    # out = self.model(X.to(self._device))
                     output = False
                     pass
-        
+
         if not output:
             try:
                 with torch.no_grad():
@@ -917,7 +915,7 @@ class ParametricLaplace(BaseLaplace):
             except:
                 X = data.to(self._device)
                 out = self.model(X)
-                #out = out[self.dict_key_y]
+                # out = out[self.dict_key_y]
                 out = out[self.dict_key_y.split("_", 1)[0]]
                 if self.dict_key_y == "forces_x":
                     out = out[:, 0]
@@ -938,7 +936,7 @@ class ParametricLaplace(BaseLaplace):
             if isinstance(data, MutableMapping):  # To support Huggingface dataset
                 X, y = data, data[self.dict_key_y].to(self._device)
             elif isinstance(data, (Data, Batch)):
-                #X, y = data, data[self.dict_key_y]
+                # X, y = data, data[self.dict_key_y]
                 X, y = data, data[self.dict_key_y.split("_", 1)[0]]
                 if self.dict_key_y == "forces_x":
                     y = y[:, 0]
@@ -947,8 +945,8 @@ class ParametricLaplace(BaseLaplace):
                 elif self.dict_key_y == "forces_z":
                     y = y[:, 2]
                 X, y = X.to(self._device), y.to(self._device)
-                #X['positions'].requires_grad_(True)
-                #X['cell'].requires_grad_(True)
+                # X['positions'].requires_grad_(True)
+                # X['cell'].requires_grad_(True)
             else:
                 X, y = data
                 X, y = X.to(self._device), y.to(self._device)
@@ -1304,8 +1302,9 @@ class ParametricLaplace(BaseLaplace):
                 X, enable_backprop=self.enable_backprop
             )
         else:
-            Js, f_mu = self.backend.jacobians(X, enable_backprop=self.enable_backprop, 
-                                                dict_key_y=self.dict_key_y)
+            Js, f_mu = self.backend.jacobians(
+                X, enable_backprop=self.enable_backprop, dict_key_y=self.dict_key_y
+            )
 
         if joint:
             f_mu = f_mu.flatten()  # (batch*out)
@@ -2415,9 +2414,9 @@ class FunctionalLaplace(BaseLaplace):
         N = len(train_loader.dataset)
         self.n_data = N
 
-        assert (
-            self.n_subset <= N
-        ), "`num_data` must be less than or equal to the original number of data points."
+        assert self.n_subset <= N, (
+            "`num_data` must be less than or equal to the original number of data points."
+        )
 
         train_loader = self._get_SoD_data_loader(train_loader)
         self.train_loader = train_loader

@@ -4,12 +4,12 @@
 # This program is distributed under the MIT License (see MIT.md)
 ###########################################################################################
 
-import ase
-import torch
-import numpy as np
-from e3nn.util.jit import compile_mode
-
 import logging
+
+import ase
+import numpy as np
+import torch
+from e3nn.util.jit import compile_mode
 
 from bam_torch.utils.scatter import scatter_sum
 
@@ -359,10 +359,10 @@ class SoftTransform(torch.nn.Module):
 
 
 # ============= Custom Radial ===============
-import torch
-from functools import lru_cache
+from collections.abc import Callable
 from math import factorial
-from typing import Callable
+
+import torch
 
 
 def sus(x: torch.Tensor) -> torch.Tensor:
@@ -376,9 +376,11 @@ def sus(x: torch.Tensor) -> torch.Tensor:
             exp(-1/x), & \text{if } x \geq 0 \\
         \end{cases}
     """
-    return torch.where(x > 0.0, 
-                       torch.exp(-1.0 / torch.where(x > 0.0, x, torch.tensor(1.0, device=x.device))), 
-                       torch.tensor(0.0, device=x.device))
+    return torch.where(
+        x > 0.0,
+        torch.exp(-1.0 / torch.where(x > 0.0, x, torch.tensor(1.0, device=x.device))),
+        torch.tensor(0.0, device=x.device),
+    )
 
 
 def soft_envelope(
@@ -398,7 +400,6 @@ def soft_envelope(
     """
     cste = value_at_origin / sus(torch.tensor(arg_multiplicator, device=x.device))
     return cste * sus(arg_multiplicator * (1.0 - x / x_max))
-
 
 
 def u(p: int, x: torch.Tensor) -> torch.Tensor:
@@ -422,7 +423,7 @@ def _constraint(x: float, derivative: int, degree: int):
     ]
 
 
-#@lru_cache(maxsize=None)
+# @lru_cache(maxsize=None)
 def solve_polynomial_torch(constraints) -> Callable[[torch.Tensor], torch.Tensor]:
     degree = len(constraints)
 
@@ -442,18 +443,19 @@ def solve_polynomial_torch(constraints) -> Callable[[torch.Tensor], torch.Tensor
         raise ValueError(f"Vector B must match A's size, but got {B.shape}")
 
     c = torch.linalg.solve(A, B)
-    c = torch.flip(c, dims=[0])  
+    c = torch.flip(c, dims=[0])
 
     def poly_fn(x: torch.Tensor) -> torch.Tensor:
-        powers = torch.arange(len(c), dtype=x.dtype, device=x.device).flip(0)  
-        poly_values = sum(c[i] * x ** powers[i] for i in range(len(c))) 
+        powers = torch.arange(len(c), dtype=x.dtype, device=x.device).flip(0)
+        poly_values = sum(c[i] * x ** powers[i] for i in range(len(c)))
         return poly_values
 
     return poly_fn
 
 
-
-def poly_envelope_torch(n0: int, n1: int, x_max: float = 1.0) -> Callable[[torch.Tensor], torch.Tensor]:
+def poly_envelope_torch(
+    n0: int, n1: int, x_max: float = 1.0
+) -> Callable[[torch.Tensor], torch.Tensor]:
     r"""Polynomial envelope function with ``n0`` and ``n1`` derivatives equal to 0 at ``x=0`` and ``x=1`` respectively.
 
     Args:
@@ -473,7 +475,9 @@ def poly_envelope_torch(n0: int, n1: int, x_max: float = 1.0) -> Callable[[torch
     )
 
     def f(x: torch.Tensor) -> torch.Tensor:
-        x_small = torch.where(x < x_max, x, torch.tensor(x_max, dtype=x.dtype, device=x.device))
+        x_small = torch.where(
+            x < x_max, x, torch.tensor(x_max, dtype=x.dtype, device=x.device)
+        )
         return torch.where(
             x < x_max,
             poly(x_small / x_max - 0.5),
@@ -481,6 +485,7 @@ def poly_envelope_torch(n0: int, n1: int, x_max: float = 1.0) -> Callable[[torch
         )
 
     return f
+
 
 @compile_mode("script")
 class BesselFunction(torch.nn.Module):
@@ -496,7 +501,9 @@ class BesselFunction(torch.nn.Module):
         assert isinstance(n, int), "n must be an integer."
         self.n = n
         self.register_buffer("x_max", torch.tensor(x_max, dtype=torch.float32))
-        self.register_buffer("factor", torch.sqrt(torch.tensor(2.0 / x_max, dtype=torch.float32)))
+        self.register_buffer(
+            "factor", torch.sqrt(torch.tensor(2.0 / x_max, dtype=torch.float32))
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -517,6 +524,7 @@ class BesselFunction(torch.nn.Module):
             n_values * torch.pi / self.x_max,
             torch.sin(n_values * torch.pi / self.x_max * x_nonzero) / x_nonzero,
         )
+
 
 @compile_mode("script")
 class PolyEnvelope(torch.nn.Module):
@@ -556,10 +564,11 @@ class PolyEnvelope(torch.nn.Module):
         Returns:
             torch.Tensor: Transformed output.
         """
-        x_small = torch.where(x < self.x_max, x, torch.tensor(self.x_max, dtype=x.dtype, device=x.device))
+        x_small = torch.where(
+            x < self.x_max, x, torch.tensor(self.x_max, dtype=x.dtype, device=x.device)
+        )
         return torch.where(
             x < self.x_max,
             self.poly(x_small / self.x_max - 0.5),
             torch.tensor(0.0, dtype=x.dtype, device=x.device),
         )[:, None]
-
