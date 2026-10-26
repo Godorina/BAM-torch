@@ -16,13 +16,15 @@
 #   then this job queues its own successor (afterany) and trains.
 # Stop the chain: `touch STOP` here (or lower MAX_SEGMENTS). Status: segment_state.json, chain.log.
 cd "$SLURM_SUBMIT_DIR"
-E=/home01/t510a03/prog/envs/bam
+# Per-account paths: override by exporting them before sbatch (Slurm passes the env on).
+E=${BAM_ENV:-$HOME/prog/envs/bam}            # conda env with BAM-torch installed (-e)
+DATA_ROOT=${DATA_ROOT:-/scratch/$USER}       # holds the dataset link dirs below
 export PATH=$E/bin:$PATH
 module load aws-ofi-nccl/1.20.0          # NCCL over Slingshot (libfabric/cxi)
 # OpenEquivariance JIT extension prebuilt in TORCH_EXTENSIONS_DIR; ranks only load it.
 module load cuda/12.8
 export CC=gcc-13 CXX=g++-13 TORCH_CUDA_ARCH_LIST=9.0
-export TORCH_EXTENSIONS_DIR=/home01/t510a03/prog/torch_extensions
+export TORCH_EXTENSIONS_DIR=${TORCH_EXTENSIONS_DIR:-$HOME/prog/torch_extensions}
 export NCCL_DEBUG=WARN
 export OMP_NUM_THREADS=1
 log() { echo "$(date '+%F %T') job=$SLURM_JOB_ID $*" | tee -a chain.log; }
@@ -32,7 +34,8 @@ SEG=$(python -c 'import json;print(json.load(open("segment_state.json"))["seg"])
 MAX=$(cat MAX_SEGMENTS 2>/dev/null || echo 1)
 [ "$SEG" -ge "$MAX" ] && { log "segment $SEG >= MAX_SEGMENTS $MAX, chain done"; exit 0; }
 
-TRAIN_SRC=/scratch/t510a03/omat24/train_mix python prepare_segment.py || { log "prepare_segment failed"; exit 1; }
+[ -e valid_data ] || ln -s "$DATA_ROOT/omat24/val_mix" valid_data
+TRAIN_SRC=$DATA_ROOT/omat24/train_mix python prepare_segment.py || { log "prepare_segment failed"; exit 1; }
 # Stop after NN.total_epochs full passes over train_data, counted across segments in
 # shards_done.json (written by the trainer); this segment trains only the epochs left.
 python - <<'PY' || { log "NN.total_epochs reached, chain done"; touch STOP; exit 0; }

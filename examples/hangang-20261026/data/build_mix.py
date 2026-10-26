@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build /scratch/t510a03/omol25_opoly26/{train,val} as interleaved symlinks (no data copied).
+"""Build $DATA_ROOT/omol25_opoly26/{train,val} (DATA_ROOT defaults to /scratch/$USER) as interleaved symlinks (no data copied).
 
 train: every omol25 train shard once + every opoly26 train shard OPOLY_REPEAT times, ordered so
        the two sets are spread evenly (each item keyed by its fractional position in its own list).
@@ -7,8 +7,9 @@ val:   all opoly26 val shards + every 4th omol25 val shard.
 Links are <index>_<shard>, index zero-padded so name order == intended order.
 """
 import os, sys
-OMOL, OPOLY = "/scratch/t510a03/omol25/omol25_extxyz", "/scratch/t510a03/opoly26/opoly26_extxyz"
-OUT = "/scratch/t510a03/omol25_opoly26"
+ROOT = os.environ.get("DATA_ROOT", f"/scratch/{os.environ['USER']}")
+OMOL, OPOLY = f"{ROOT}/omol25/omol25_extxyz", f"{ROOT}/opoly26/opoly26_extxyz"
+OUT = f"{ROOT}/omol25_opoly26"
 OPOLY_REPEAT = int(sys.argv[1]) if len(sys.argv) > 1 else 2
 
 

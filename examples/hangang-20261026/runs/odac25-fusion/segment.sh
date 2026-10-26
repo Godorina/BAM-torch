@@ -16,13 +16,15 @@
 #   then this job queues its own successor (afterany) and trains.
 # Stop the chain: `touch STOP` here (or lower MAX_SEGMENTS). Status: segment_state.json, chain.log.
 cd "$SLURM_SUBMIT_DIR"
-E=/home01/t510a03/prog/envs/bam
+# Per-account paths: override by exporting them before sbatch (Slurm passes the env on).
+E=${BAM_ENV:-$HOME/prog/envs/bam}            # conda env with BAM-torch installed (-e)
+DATA_ROOT=${DATA_ROOT:-/scratch/$USER}       # holds the dataset link dirs below
 export PATH=$E/bin:$PATH
 module load aws-ofi-nccl/1.20.0          # NCCL over Slingshot (libfabric/cxi)
 # OpenEquivariance JIT extension prebuilt in TORCH_EXTENSIONS_DIR; ranks only load it.
 module load cuda/12.8
 export CC=gcc-13 CXX=g++-13 TORCH_CUDA_ARCH_LIST=9.0
-export TORCH_EXTENSIONS_DIR=/home01/t510a03/prog/torch_extensions
+export TORCH_EXTENSIONS_DIR=${TORCH_EXTENSIONS_DIR:-$HOME/prog/torch_extensions}
 export NCCL_DEBUG=WARN
 export OMP_NUM_THREADS=1
 log() { echo "$(date '+%F %T') job=$SLURM_JOB_ID $*" | tee -a chain.log; }
@@ -34,13 +36,14 @@ MAX=$(cat MAX_SEGMENTS 2>/dev/null || echo 1)
 
 # E0 (enr_avg_per_element) fitted once on the ODAC25 train split, spread over all nodes.
 if [ ! -s e0_odac25_train.txt ]; then
-  X=/scratch/t510a03/odac25/convert; G=/scratch/t510a03/envs/graphpkl/bin/python; rm -rf e0_parts
-  srun --ntasks-per-node=1 bash -c "OPENBLAS_NUM_THREADS=1 $G $X/fit_e0_split.py part e0_parts /scratch/t510a03/odac25/raw/train --split \$SLURM_PROCID/\$SLURM_NTASKS -w 280" 2>&1 | grep -vi warn
+  X=$DATA_ROOT/odac25/convert; G=${E0_PYTHON:-$DATA_ROOT/envs/graphpkl/bin/python}; rm -rf e0_parts
+  srun --ntasks-per-node=1 bash -c "OPENBLAS_NUM_THREADS=1 $G $X/fit_e0_split.py part e0_parts $DATA_ROOT/odac25/raw/train --split \$SLURM_PROCID/\$SLURM_NTASKS -w 280" 2>&1 | grep -vi warn
   OPENBLAS_NUM_THREADS=1 $G $X/fit_e0_split.py solve e0_parts e0_odac25_train.txt 2>&1 | grep -vi warn | tee -a chain.log
   [ -s e0_odac25_train.txt ] || { log "E0 fit failed"; exit 1; }
 fi
 
-TRAIN_SRC=/scratch/t510a03/odac25/odac25_extxyz/train python prepare_segment.py || { log "prepare_segment failed"; exit 1; }
+[ -e valid_data ] || ln -s "$DATA_ROOT/odac25/odac25_extxyz/val" valid_data
+TRAIN_SRC=$DATA_ROOT/odac25/odac25_extxyz/train python prepare_segment.py || { log "prepare_segment failed"; exit 1; }
 # Chaining is off unless a CHAIN file exists here (then queue the next 24h segment).
 if [ -e CHAIN ]; then
 # Queue the successor. The account allows only 5 queued+running jobs, so if that is

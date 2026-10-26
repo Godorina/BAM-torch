@@ -15,7 +15,7 @@ State lives in segment_state.json ({"seg", "fails", "first"}).
 """
 import glob, json, os, re, shutil, sys
 
-SRC = os.environ.get("TRAIN_SRC", "/scratch/t510a03/opoly26/opoly26_extxyz/train")
+SRC = os.environ["TRAIN_SRC"]  # set by segment.sh
 MAX_FAILS = 2
 dry = "--dry-run" in sys.argv
 

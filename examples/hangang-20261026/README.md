@@ -38,7 +38,6 @@ export CC=gcc-13 CXX=g++-13 TORCH_CUDA_ARCH_LIST=9.0
 export TORCH_EXTENSIONS_DIR=$HOME/prog/torch_extensions   # OpenEquivariance JIT 빌드 결과
 ```
 
-`segment.sh`의 `E=`(환경 경로)와 `TORCH_EXTENSIONS_DIR`는 설치한 위치에 맞게 바꿔야 합니다.
 OpenEquivariance 확장은 첫 실행 때 빌드되므로, 한 노드에서 먼저 한 번 import해 두면 잡이 빌드를 기다리지 않습니다.
 
 ## 2. 데이터
@@ -54,7 +53,7 @@ OpenEquivariance 확장은 첫 실행 때 빌드되므로, 한 노드에서 먼�
 | `manifest_odac25_odac25_extxyz_train.tsv` | 5668 | 1368.7 GB |
 | `manifest_odac25_odac25_extxyz_val.tsv` | 131 | 30.6 GB |
 
-학습 순서는 파일 이름 순서이므로, 링크 폴더를 만드는 스크립트도 같이 둡니다 (스크립트 안의 `/scratch/t510a03` 경로는 바꿔서 쓰세요):
+학습 순서는 파일 이름 순서이므로, 링크 폴더를 만드는 스크립트도 같이 둡니다. 데이터 위치는 `DATA_ROOT`(기본값 `/scratch/$USER`) 아래로 잡습니다:
 
 - `data/build_links.py`: omat24 11개 subset을 고르게 섞은 `train_mix/`, `val_mix/` 링크 (복사 없음)
 - `data/build_mix.py`: omol25 + opoly26(x2) 섞은 `train/`, `val/` 링크
@@ -65,12 +64,23 @@ E0(원소별 기준 에너지) 파일은 각 run 폴더에 있습니다.
 
 ## 3. 실행
 
+계정마다 다른 경로는 `segment.sh`가 아래 변수로 받습니다. 기본값을 따르면 따로 설정할 것이 없습니다.
+
+| 변수 | 기본값 | 의미 |
+|---|---|---|
+| `BAM_ENV` | `$HOME/prog/envs/bam` | BAM-torch를 설치한 conda 환경 |
+| `DATA_ROOT` | `/scratch/$USER` | 데이터 링크 폴더가 있는 곳 (`omat24/train_mix`, `omat24/val_mix`, `omol25_opoly26/{train,val}`, `odac25/odac25_extxyz/{train,val}`) |
+| `TORCH_EXTENSIONS_DIR` | `$HOME/prog/torch_extensions` | OpenEquivariance 빌드 결과 |
+| `E0_PYTHON` | `$DATA_ROOT/envs/graphpkl/bin/python` | odac25 E0 fit용 python (E0 파일이 있으면 안 씀) |
+
 ```bash
 cp -r runs/omat24-512 /scratch/$USER/omat24/calc-128x4
 cd /scratch/$USER/omat24/calc-128x4
-ln -s ../val_mix valid_data        # mix: .../omol25_opoly26/val, odac25: .../odac25_extxyz/val
-sbatch segment.sh                  # TRAIN_SRC는 segment.sh 안에 있음
+sbatch segment.sh                                    # 기본값 사용
+DATA_ROOT=/scratch/other/data BAM_ENV=$HOME/envs/bam sbatch segment.sh   # 경로가 다를 때
 ```
+
+`valid_data` 링크는 없으면 `segment.sh`가 `$DATA_ROOT` 아래로 만듭니다.
 
 - 한 잡은 24시간 제한입니다. 끝나면 같은 폴더에서 `sbatch segment.sh`를 다시 하면 이어서 학습합니다.
   `prepare_segment.py`가 로그에서 마지막으로 시작한 shard를 찾아 `train_data/`를 그 shard부터 다시 만들고, 가장 최근 체크포인트를 `fname_pkl`로 올리고 `restart: true`로 바꿉니다.

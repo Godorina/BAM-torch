@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build /scratch/t510a03/omat24/{train_mix,val_mix}: flat symlinks over the 11 omat24 subsets (no data copied).
+"""Build $DATA_ROOT/omat24/{train_mix,val_mix} (DATA_ROOT defaults to /scratch/$USER): flat symlinks over the 11 omat24 subsets (no data copied).
 
 train_mix: every train shard once, the 11 subsets interleaved evenly (each shard keyed by its
            fractional position in its own subset), named <index>_<subset>__<shard> so name order == order.
 val_mix:   every subset's val data.extxyz as <subset>__data.extxyz.
 """
 import os, re, sys
-ROOT = "/scratch/t510a03/omat24"
+ROOT = os.environ.get("DATA_ROOT", f"/scratch/{os.environ['USER']}") + "/omat24"
 
 
 def shards(d):
