@@ -92,6 +92,7 @@ python data/build_links.py     # -> train_mix/ (5216 links), val_mix/ (11 links)
 ```bash
 python data/fit_element_refs2.py $DATA_ROOT/omat24/train -o get_enr_avg_per_element_omat24.txt -w 64
 ```
+
 ## 3. 실행
 
 계정마다 다른 경로는 `segment.sh`가 아래 변수로 받습니다. 기본값을 따르면 따로 설정할 것이 없습니다.
