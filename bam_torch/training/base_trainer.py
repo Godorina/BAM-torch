@@ -557,7 +557,13 @@ class BaseTrainer:
         np.random.seed(rng_seed)
         torch.manual_seed(rng_seed)
         torch.cuda.manual_seed_all(rng_seed)
-        torch.use_deterministic_algorithms(True)
+        # `deterministic`: true (default) | "warn_only" | false. "warn_only" lets ops with no
+        # deterministic kernel run (e.g. OpenEquivariance conv_fusion's atomic scatter) and
+        # only warns, at the cost of bitwise run-to-run reproducibility.
+        det = self.json_data.get('deterministic', True)
+        if det not in (True, False, "warn_only"):
+            raise ValueError(f"deterministic must be true, false or 'warn_only', got {det!r}")
+        torch.use_deterministic_algorithms(det is not False, warn_only=det == "warn_only")
         os.environ["CUBLAS_WORKSPACE_CONFIG"]= ":16:8"  # :4096:8
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False

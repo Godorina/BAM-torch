@@ -152,8 +152,12 @@ class BucketedDataLoader:
         reference: str = 'edges',
         rank: int = 0,
         world_size: int = 1,
+        pre_sharded: bool = False,
     ):
         self.dataset = dataset
+        # True when the caller already gave this rank only its own graphs:
+        # skip the rank striding, keep the cross-rank batch-count sync.
+        self.pre_sharded = pre_sharded
         self.batch_size = batch_size
         self.n_buckets = n_buckets
         self.shuffle = shuffle
@@ -200,7 +204,7 @@ class BucketedDataLoader:
         # when ranks iterate unequal numbers of times.
         all_batches: List[List] = []
         for bucket in self._epoch_buckets:
-            if self.world_size > 1:
+            if self.world_size > 1 and not self.pre_sharded:
                 bucket = bucket[self.rank::self.world_size]
 
             pos = 0
@@ -251,7 +255,7 @@ class BucketedDataLoader:
         for b, sizes in zip(self._epoch_buckets, self._epoch_bucket_sizes):
             if not b:
                 continue
-            if self.world_size > 1:
+            if self.world_size > 1 and not self.pre_sharded:
                 shard = b[self.rank::self.world_size]
                 shard_sizes = sizes[self.rank::self.world_size]
             else:

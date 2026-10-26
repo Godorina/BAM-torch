@@ -355,30 +355,44 @@ class DensTrainer(BaseTrainer):
         train_acc = {}
 
         n_xyz = len(train_files)
-        for ixyz, filename in enumerate(train_files):
-            ##################################
-            #### TRAIN
-            ##################################
-            #print ('train', ixyz, filename)
-            mode='train'
-            self.model.train()
-            # DeNS: decide per (epoch, file) whether this loader runs the
+        # NN.shard_group=K: train K files as one loader. The per-loader fixed cost
+        # (batch-count sync, rank skew, sync) is paid once per K files; the
+        # file-count based intervals below (save / valid / epoch end) are kept.
+        K = self.json_data['NN'].get('shard_group', 1)
+        groups = [train_files[i:i + K] for i in range(0, n_xyz, K)]
+        mode = 'train'
+
+        def dens_flag(i0):
+            # DeNS: decide per (epoch, group) whether this loader runs the
             # denoising task. Seeded so every DDP rank draws the same
             # flag (each rank still rattles with its own noise, which is
             # fine — BucketedDataLoader gives each graph to one rank).
-            dens_config = self.json_data.get('dens', {})
-            dens_file = False
-            if self._dens_enabled():
-                rng = np.random.default_rng(
-                    self.json_data['NN']['data_seed']
-                    + 100_000 * (epoch + self.start_epoch) + ixyz
-                )
-                dens_file = bool(
-                    rng.random() < dens_config.get('probability', 0.5)
-                )
-            data_loader = self.configure_dataloader_from_xyz(
-                filename, mode=mode, dens=dens_file
+            if not self._dens_enabled():
+                return False
+            rng = np.random.default_rng(
+                self.json_data['NN']['data_seed']
+                + 100_000 * (epoch + self.start_epoch) + i0
             )
+            return bool(rng.random() < self.json_data.get('dens', {}).get('probability', 0.5))
+
+        for ig, files in enumerate(groups):
+            i0 = ig * K                    # files done before this group
+            ixyz = i0 + len(files) - 1     # index of its last file
+
+            def crossed(n):
+                return n and (ixyz + 1) // n != i0 // n
+            ##################################
+            #### TRAIN
+            ##################################
+            self.model.train()
+            data_loader = self.get_dataloader_from_data(
+                self._load_graphs(files, mode, dens_flag(i0)), mode
+            )
+            # prefetch_next_shard: build the next group's graphs (read + neighbour
+            # lists + DeNS rattling) in a thread while this one trains on the GPU.
+            # After _load_graphs: it consumes the pending prefetch of this group.
+            if self.json_data.get('prefetch_next_shard') and ig + 1 < len(groups):
+                self._prefetch_graphs(groups[ig + 1], mode, dens_flag(i0 + K))
             if hasattr(data_loader, 'set_epoch'):
                 data_loader.set_epoch(epoch)
 
@@ -430,19 +444,43 @@ class DensTrainer(BaseTrainer):
                 train_acc, train_loss_log_config
             )
             if self.rank == 0 and shard_mode:
-
-                self.update_check_point(
-                    epoch,
-                    curr_train_loss_dict,
-                    {'loss': self.loss_valid_min}
-                )
-                ckpt_to_save = dict(self.ckpt)
-                torch.save(ckpt_to_save, 'model_train.pkl')
+                # NN.epoch_save_interval=K: also keep model_epoch<N>.pkl every K full
+                # passes over train_data. `epoch` restarts each 24h segment, so the
+                # passes are counted in completed shards (shards_done.json).
+                _k = self.json_data['NN'].get('epoch_save_interval')
+                _epoch_end = False
+                if _k:
+                    import json, shutil
+                    try:
+                        _prev = json.load(open('shards_done.json'))['n']
+                    except FileNotFoundError:
+                        _prev = 0
+                    _done = _prev + len(files)
+                    json.dump({'n': _done}, open('shards_done.json', 'w'))
+                    _epoch_end = _done // (n_xyz * _k) != _prev // (n_xyz * _k)
+                # The 253MB save blocks every other rank at the next collective, so
+                # NN.train_save_every=N saves only every N shards (and at epoch ends).
+                # tmp + rename: a wall-clock kill mid-save must not tear the file.
+                _every = self.json_data['NN'].get('train_save_every', 1)
+                if crossed(_every) or ixyz + 1 == n_xyz or _epoch_end:
+                    self.update_check_point(
+                        epoch,
+                        curr_train_loss_dict,
+                        {'loss': self.loss_valid_min}
+                    )
+                    ckpt_to_save = dict(self.ckpt)
+                    torch.save(ckpt_to_save, 'model_train.pkl.tmp')
+                    os.replace('model_train.pkl.tmp', 'model_train.pkl')
+                if _epoch_end:
+                    _f = f'model_epoch{_done // n_xyz}.pkl'
+                    shutil.copy2('model_train.pkl', _f)
+                    print(f"[save] {_f} ({_done} shards)", flush=True,
+                          file=self.logger.fout)
 
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-            gc.collect()
+                # torch.cuda.empty_cache()
+            # gc.collect()  # py-spy: per-shard gc.collect/empty_cache took ~30% of train time
             del data_loader
 
             if not shard_mode:
@@ -453,7 +491,7 @@ class DensTrainer(BaseTrainer):
             # with fewer train files than the interval would never
             # validate and never save a checkpoint.
             valid_interval = self.json_data.get('valid_interval', 1)
-            if (ixyz+1) % valid_interval != 0 and (ixyz+1) != n_xyz:
+            if not crossed(valid_interval) and (ixyz+1) != n_xyz:
                 continue
 
             ##################################
@@ -700,6 +738,31 @@ class DensTrainer(BaseTrainer):
         valid_files = _list_xyzs(self.json_data.get('nvalid'), 'nvalid')
         return train_files, valid_files
 
+    def _prefetch_graphs(self, files, mode, dens):
+        """Start building the graphs of `files` in a background thread (one pending group)."""
+        if not hasattr(self, '_prefetch_pool'):
+            from concurrent.futures import ThreadPoolExecutor
+            self._prefetch_pool = ThreadPoolExecutor(max_workers=1)
+        key = (tuple(files), mode, dens)
+        self._prefetch = (key, self._prefetch_pool.submit(
+            lambda: [self._build_graphs(f, mode, dens) for f in files]))
+
+    def _load_graphs(self, files, mode, dens):
+        """Graphs of `files` (the prefetched ones if they match), log lines printed here."""
+        key, fut = getattr(self, '_prefetch', (None, None))
+        if key == (tuple(files), mode, dens):
+            self._prefetch = (None, None)
+            built = fut.result()
+        else:
+            built = [self._build_graphs(f, mode, dens) for f in files]
+        if self.rank == 0:
+            # Reversed: prepare_segment.py restarts at the last "from train_data/..."
+            # line, which must be the first file of the unfinished group.
+            for _, msg in reversed(built):
+                if msg:
+                    print(msg, flush=True, file=self.logger.fout)
+        return [g for graphs, _ in built for g in graphs]
+
     def _read_frames_cached(self, xyz_file_path, cache=True) -> list[Atoms]:
         """Read an ASE file or an in-memory split shard, reusing frames.
 
@@ -712,7 +775,11 @@ class DensTrainer(BaseTrainer):
         frame host memory back for re-reads.
         """
         def _read_frames() -> list[Atoms]:
-            frames = read(xyz_file_path, index=slice(None))
+            # shard_frames_by_rank: parse only this rank's frames; the loader then
+            # skips its own rank striding (pre_sharded) but still syncs batch counts.
+            index = (slice(self.rank, None, self.world_size)
+                     if self.json_data.get('shard_frames_by_rank') else slice(None))
+            frames = read(xyz_file_path, index=index)
             return frames if isinstance(frames, list) else [frames]
 
         if isinstance(xyz_file_path, tuple):
@@ -736,6 +803,11 @@ class DensTrainer(BaseTrainer):
             raise ValueError(f"Cannot read frames from {xyz_file_path}: {exc}") from exc
 
     def configure_dataloader_from_xyz(self, xyz_file_path, mode, dens=False):
+        return self.get_dataloader_from_data(
+            self._load_graphs([xyz_file_path], mode, dens), mode)
+
+    def _build_graphs(self, xyz_file_path, mode, dens=False):
+        """(graphs, log line) of one file; may run in the prefetch thread, so no printing."""
         # DeNS loaders bypass the graph cache: the rattling noise must be
         # fresh on every visit, and the neighbour list must be rebuilt for
         # the rattled geometry (preprocess_graph handles both).
@@ -793,16 +865,11 @@ class DensTrainer(BaseTrainer):
                 if g is not None:
                     g.structure_id = torch.tensor([i], dtype=torch.long)
             safe_graphs = [g for g in graphs if g is not None]
-            if self.rank == 0:
-                print(
-                    f"[dens] rattled {len(safe_graphs)} graphs from "
-                    f"{xyz_file_path} (sigma ~ {sigma_sampling}"
-                    f"({sigma_min}, {sigma_max}), corrupt_ratio="
-                    f"{'all atoms' if corrupt_ratio is None else corrupt_ratio})",
-                    flush=True,
-                    file=self.logger.fout
-                )
-            return self.get_dataloader_from_data(safe_graphs, mode)
+            return safe_graphs, (
+                f"[dens] rattled {len(safe_graphs)} graphs from "
+                f"{xyz_file_path} (sigma ~ {sigma_sampling}"
+                f"({sigma_min}, {sigma_max}), corrupt_ratio="
+                f"{'all atoms' if corrupt_ratio is None else corrupt_ratio})")
 
         cache = getattr(self, '_xyz_graph_cache', None)
         if cache is None:
@@ -843,15 +910,12 @@ class DensTrainer(BaseTrainer):
                     g.structure_id = torch.tensor([i], dtype=torch.long)
             safe_graphs = [g for g in graphs if g is not None]
             cache[cache_key] = safe_graphs
-            if self.rank == 0:
-                print(
-                    f"[xyz cache] preprocessed {len(safe_graphs)} graphs from "
-                    f"{xyz_file_path} (dropped {len(graphs) - len(safe_graphs)} empty)",
-                    flush=True,
-                    file=self.logger.fout
-                )
-
-        return self.get_dataloader_from_data(safe_graphs, mode)
+            return safe_graphs, (
+                f"[xyz cache] preprocessed {len(safe_graphs)} graphs from "
+                f"{xyz_file_path} (dropped {len(graphs) - len(safe_graphs)} empty)")
+        # Logged on every visit too: prepare_segment.py finds the restart point from it.
+        return safe_graphs, (f"[xyz cache] reused {len(safe_graphs)} graphs from {xyz_file_path}"
+                             if mode == 'train' else None)
 
     def get_dataloader_from_data(self, graphset, mode):
 
@@ -868,6 +932,7 @@ class DensTrainer(BaseTrainer):
             reference='edges',
             rank=self.rank,
             world_size=self.world_size,
+            pre_sharded=bool(self.json_data.get('shard_frames_by_rank')),
         )
         return data_loader
 
