@@ -38,33 +38,20 @@ OpenEquivariance 확장은 첫 실행 때 빌드되므로, 한 노드에서 먼�
 
 ## 2. 데이터
 
-Meta가 배포한 OMat24 원본(`.aselmdb`)에서 시작합니다. 모든 경로는 `DATA_ROOT`(기본값 `/scratch/$USER`) 아래입니다.
+Meta가 배포한 OMat24 원본(`.aselmdb`, train 릴리스 `241018`, val 릴리스 `241220`)에서 시작합니다. 모든 경로는 `DATA_ROOT`(기본값 `/scratch/$USER`) 아래입니다.
 
 ```
 $DATA_ROOT/omat24/
-├── raw/{train,val}/<subset>/*.aselmdb      # 2-1. 다운로드
-├── train/<subset>/db_N.extxyz              # 2-2. 변환 (train 5216 shards)
+├── raw/{train,val}/<subset>/*.aselmdb      # OMat24 원본 (tar.gz를 split 폴더에 푼 그대로)
+├── train/<subset>/db_N.extxyz              # 2-1. 변환 (train 5216 shards)
 ├── val/<subset>/data.extxyz                #      (val 11 files)
-├── train_mix/  -> train/... 링크            # 2-3. 학습 순서대로 섞은 링크
+├── train_mix/  -> train/... 링크            # 2-2. 학습 순서대로 섞은 링크
 └── val_mix/    -> val/... 링크
 ```
 
-### 2-1. 다운로드 (`data/download_omat24.sh`)
+### 2-1. extxyz로 변환 (`data/convert_extxyz_omat24.py`)
 
-```bash
-bash data/download_omat24.sh        # 11 subsets x {train, val}
-```
-
-- 이 run과 같은 릴리스를 받습니다: **train `241018`, val `241220`**.
-  `https://dl.fbaipublicfiles.com/opencatalystproject/data/omat/<release>/omat/<split>/<subset>.tar.gz`
-- val은 `241018`과 `241220` 두 버전이 있는데, 이 run은 `241220`을 썼습니다(md5로 확인).
-- 받는 양은 압축 파일 기준 약 198 GB입니다(train 195.5 GB, val 2.1 GB). 압축 파일은 하나씩 풀고 지우므로, 그 순간에는 가장 큰 압축 파일(`aimd-from-PBE-3000-nvt` 34 GB)만큼 공간이 더 필요합니다. 변환 후 extxyz는 약 309 GB입니다.
-- 중간에 끊기면 다시 실행하면 이어 받고, 다 받은 subset은 건너뜁니다.
-- OMat24 라이선스(CC-BY-4.0)를 따릅니다.
-
-### 2-2. extxyz로 변환 (`data/convert_extxyz_omat24.py`)
-
-`.aselmdb` 1개를 `.extxyz` 1개로, 프레임을 그대로(arrays, info, energy/forces/stress) 옮깁니다. 학습 환경과 따로, `fairchem-core` 2.x가 있는 환경에서 돌립니다.
+`.aselmdb` 1개를 `.extxyz` 1개로, 프레임을 그대로(arrays, info, energy/forces/stress) 옮깁니다. 학습 환경과 따로, `fairchem-core` 2.x가 있는 환경에서 돌립니다. 변환 후 extxyz는 약 309 GB입니다.
 
 ```bash
 pip install fairchem-core ase           # 변환용 환경
@@ -76,7 +63,7 @@ python data/convert_extxyz_omat24.py --workers 64     # raw/ -> train/, val/
   aimd-from-PBE-1000-npt 484, aimd-from-PBE-1000-nvt 438, aimd-from-PBE-3000-npt 490, aimd-from-PBE-3000-nvt 482, rattled-1000 441, rattled-1000-subsampled 464, rattled-300 483, rattled-300-subsampled 464, rattled-500 498, rattled-500-subsampled 480, rattled-relax 492.
 - 원래 변환은 fairchem-core 2.21~2.22, ase 3.28로 했습니다. ase 버전이 다르면 숫자 표기가 달라져 파일 크기가 조금 다를 수 있습니다(값은 같음).
 
-### 2-3. 학습용 링크 만들기 (`data/build_links.py`)
+### 2-2. 학습용 링크 만들기 (`data/build_links.py`)
 
 ```bash
 python data/build_links.py     # -> train_mix/ (5216 links), val_mix/ (11 links)
@@ -84,7 +71,7 @@ python data/build_links.py     # -> train_mix/ (5216 links), val_mix/ (11 links)
 
 학습은 `train_data/` 안의 파일 이름 순서대로 진행됩니다. 이 스크립트는 11개 subset을 고르게 섞어 `<index>_<subset>__db_N.extxyz` 이름으로 링크를 만듭니다(데이터 복사 없음).
 
-### 2-4. E0 (원소별 기준 에너지)
+### 2-3. E0 (원소별 기준 에너지)
 
 이 run에서 쓴 E0 파일 `runs/omat24-fusion/get_enr_avg_per_element_omat24.txt`가 들어 있으니 그대로 쓰면 됩니다.
 다시 계산하려면 train extxyz에 최소제곱 fit을 합니다(`bam_torch.utils.get_enr_avg_per_element`의 `element: "auto"`와 같은 형식). 다시 계산한 값이 이 파일과 똑같은지는 확인하지 않았습니다.

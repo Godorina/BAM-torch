@@ -19,7 +19,7 @@ import traceback
 from multiprocessing import Pool
 
 _ROOT = os.environ.get("DATA_ROOT", f"/scratch/{os.environ.get('USER', '')}") + "/omat24"
-BASE = _ROOT + "/raw"  # download_omat24.sh: raw/{train,val}/<subset>/*.aselmdb
+BASE = _ROOT + "/raw"  # OMat24 as released: raw/{train,val}/<subset>/*.aselmdb
 OUT = _ROOT            # -> {train,val}/<subset>/*.extxyz, what build_links.py reads
 NAMES = [
     "rattled-1000", "rattled-1000-subsampled",
