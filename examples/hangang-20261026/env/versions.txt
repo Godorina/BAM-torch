@@ -1,0 +1,7 @@
+Python 3.13.17
+torch 2.11.0+cu128 cuda 12.8 nccl (2, 28, 9)
+e3nn 0.6.0 ase 3.28.0
+python3.13
+NVIDIA-SMI version  : 570.124.06
+NVML version        : 570.124
+PRETTY_NAME="SUSE Linux Enterprise Server 15 SP6"
