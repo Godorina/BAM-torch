@@ -92,7 +92,7 @@ def main():
     order = names[pos:] + names[:pos]
     print(f"   next order starts at {order[0]} ({n} shards)")
 
-    ck = pick_checkpoint(target) if log is not None else None
+    ck = pick_checkpoint(target)  # first segment too: fname_pkl may be a given start model
     if log is not None and ck is None:
         sys.exit("2) a previous segment ran but no loadable checkpoint: refusing to restart from scratch")
     print(f"2) newest loadable checkpoint: {ck[1]} (epoch {ck[2]})" if ck else "2) no checkpoint: start from scratch")

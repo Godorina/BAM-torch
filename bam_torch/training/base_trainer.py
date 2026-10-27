@@ -821,7 +821,7 @@ class BaseTrainer:
         optimizer = self.set_optimizer()
         model_config = self.json_data['NN']
         restart = model_config.get('restart')
-        if restart and self.model_ckpt is not None:
+        if restart and self.model_ckpt is not None and not model_config.get("reset_optimizer"):  # NN.reset_optimizer: weights only, fresh Adam/LR
             optimizer.load_state_dict(self.model_ckpt['opt_state'])
         return optimizer
 
@@ -871,7 +871,7 @@ class BaseTrainer:
         scheduler = self.set_scheduler()
         model_config = self.json_data['NN']
         restart = model_config.get('restart')
-        if restart and self.model_ckpt is not None:
+        if restart and self.model_ckpt is not None and not model_config.get("reset_optimizer"):
             scheduler.load_state_dict(self.model_ckpt['scheduler'])
         return scheduler
 
